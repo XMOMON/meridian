@@ -108,15 +108,17 @@
 
 ## 🚀 Quick Start
 
-### Prerequisites
+### 1. Install Node.js
 
-- **Node.js 18+**
-- **Solana wallet** (base58 private key)
-- **RPC endpoint** ([Helius](https://helius.xyz) recommended)
-- **OpenRouter API key** ([openrouter.ai](https://openrouter.ai))
-- **Telegram bot token** (optional, via [@BotFather](https://t.me/BotFather))
+Meridian requires **Node.js 18+**.
 
-### Installation
+- **Windows:** Download from [nodejs.org](https://nodejs.org/) (LTS recommended) → Run installer → Restart terminal
+- **Mac:** `brew install node`
+- **Linux:** `curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs`
+
+Verify: `node --version` should show `v18.x.x` or higher.
+
+### 2. Clone & Install
 
 ```bash
 git clone https://github.com/XMOMON/meridian.git
@@ -124,41 +126,173 @@ cd meridian
 npm install
 ```
 
-### Setup
+### 3. Get a Solana Wallet
 
-**Option A — Interactive wizard** (recommended):
+You need a **base58 private key** for the wallet Meridian will trade with.
+
+<details>
+<summary><b>Option A — Create a new wallet (recommended for bot use)</b></summary>
+
 ```bash
-npm run setup
+# Install Solana CLI
+sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+
+# Create a new wallet
+solana-keygen new --outfile ~/meridian-wallet.json
+
+# Export the base58 private key
+node -e "const k=require('fs').readFileSync(require('os').homedir()+'/meridian-wallet.json');const bs58=require('bs58');console.log(bs58.encode(Buffer.from(JSON.parse(k))))"
 ```
 
-**Option B — Manual config:**
+Copy the output — that's your `WALLET_PRIVATE_KEY`.
 
-Create `.env`:
+</details>
+
+<details>
+<summary><b>Option B — Export from Phantom / Solflare</b></summary>
+
+1. Open **Phantom** → ⚙️ Settings → 🔑 **Export Private Key**
+2. Enter your password
+3. Copy the base58 string — that's your `WALLET_PRIVATE_KEY`
+
+> ⚠️ Use a **dedicated wallet** for the bot. Never use your main wallet.
+
+</details>
+
+Fund the wallet with SOL (at least **1 SOL** for paper trading, more for live).
+
+---
+
+### 4. Get a Helius RPC Endpoint
+
+Helius provides fast, reliable Solana RPC access. The **free tier** gives you **500K credits/day** — enough for Meridian.
+
+1. Go to **[helius.dev](https://www.helius.dev/)** and click **Start Building**
+2. Sign up with GitHub or email
+3. Click **New Project** → name it `meridian` (or anything)
+4. You'll see your **API Key** on the dashboard
+5. Your RPC URL is: `https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY`
+
+You need both values:
+```
+RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
+HELIUS_API_KEY=YOUR_API_KEY
+```
+
+> 💡 **Free tier limits:** If you run into rate limits, upgrade to the **Developer plan** ($49/mo) for 100M credits/day. Paper trading uses very few credits.
+
+---
+
+### 5. Get an OpenRouter API Key
+
+OpenRouter gives Meridian access to AI models (GPT, Claude, Gemini, etc.) — including **free models**.
+
+1. Go to **[openrouter.ai](https://openrouter.ai/)** and sign up
+2. Click your profile → **Keys** → **Create Key**
+3. Name it `meridian`, click **Create**
+4. Copy the key (starts with `sk-or-...`)
+
+```
+OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxx
+```
+
+> 💡 **Free models available!** Meridian defaults to `openai/gpt-oss-120b:free` which costs $0. You can switch to paid models like `anthropic/claude-sonnet-4` for better reasoning. Check [openrouter.ai/models](https://openrouter.ai/models) for pricing.
+
+#### Model Selection
+
+| Model | Cost | Best For |
+|:------|:-----|:---------|
+| `openai/gpt-oss-120b:free` | Free | Default, good enough for most trades |
+| `openai/gpt-oss-20b:free` | Free | Faster, lighter |
+| `google/gemini-2.5-flash` | ~$0.001/cycle | Great balance of speed + quality |
+| `anthropic/claude-sonnet-4` | ~$0.01/cycle | Best reasoning, highest accuracy |
+
+Set your model in `user-config.json`:
+```json
+{
+  "llmModel": "openai/gpt-oss-120b:free"
+}
+```
+
+---
+
+### 6. Set Up Telegram Bot (Optional but Recommended)
+
+Telegram lets you monitor and control Meridian from your phone.
+
+1. Open Telegram and search for **[@BotFather](https://t.me/BotFather)**
+2. Send `/newbot`
+3. Choose a **name** (e.g. `My Meridian Bot`)
+4. Choose a **username** (e.g. `my_meridian_bot`)
+5. BotFather gives you a token like `7123456789:AAH...` — copy it
+6. **Get your chat ID:**
+   - Send any message to your new bot
+   - Visit `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
+   - Find `"chat":{"id":123456789}` — that number is your chat ID
+7. **Get your user ID** (for security):
+   - Send a message to [@userinfobot](https://t.me/userinfobot)
+   - It replies with your user ID
+
+```
+TELEGRAM_BOT_TOKEN=7123456789:AAHxxxxxxxxxxxxxxxxxxxxxx
+TELEGRAM_CHAT_ID=123456789
+TELEGRAM_ALLOWED_USER_IDS=123456789
+```
+
+> 🔒 `TELEGRAM_ALLOWED_USER_IDS` restricts who can send commands to the bot. Always set this!
+
+---
+
+### 7. Create Your `.env` File
+
+Create a file called `.env` in the meridian directory with all your keys:
+
 ```env
-WALLET_PRIVATE_KEY=your_base58_private_key
-RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
-OPENROUTER_API_KEY=sk-or-...
-HELIUS_API_KEY=your_helius_key
-TELEGRAM_BOT_TOKEN=123456:ABC...
+# Wallet
+WALLET_PRIVATE_KEY=your_base58_private_key_here
+
+# RPC (Helius)
+RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_KEY
+HELIUS_API_KEY=YOUR_HELIUS_KEY
+
+# AI (OpenRouter)
+OPENROUTER_API_KEY=sk-or-v1-your_key_here
+
+# Telegram (optional)
+TELEGRAM_BOT_TOKEN=7123456789:AAHxxxxxx
 TELEGRAM_CHAT_ID=your_chat_id
+TELEGRAM_ALLOWED_USER_IDS=your_user_id
+
+# Mode
 DRY_RUN=true
 ```
 
-Copy and edit config:
+> ⚠️ **Never share your `.env` file.** It's gitignored by default.
+
+### 8. Create Your Config
+
 ```bash
 cp user-config.example.json user-config.json
 ```
 
-### Run
+Or run the interactive wizard which creates both `.env` and `user-config.json`:
+```bash
+npm run setup
+```
+
+---
+
+### 9. Run
 
 ```bash
 # Paper trading (safe, no real transactions)
 npm run dev
 
-# Live mode
+# Live mode (real SOL!)
 npm start
 
-# Background with PM2 (recommended for VPS)
+# Background with PM2 (recommended for VPS / always-on)
+npm install -g pm2
 npm run pm2:start
 pm2 save
 ```
