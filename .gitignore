@@ -20,6 +20,7 @@ strategy-library.json
 decision-log.json
 hivemind-cache.json
 signal-weights.json
+daily-pnl.json
 
 # Logs
 logs/
@@ -41,3 +42,9 @@ discord-signals.json
 
 # Claude Code runtime lock
 .claude/scheduled_tasks.lock
+
+# Backup & temp files
+*.bak.*
+*.zip
+user-config-dry.json
+user-config-live.json

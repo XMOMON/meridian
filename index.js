@@ -34,6 +34,8 @@ import { stageSignals } from "./signal-tracker.js";
 import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
+import { updatePaperPositions, checkPaperExits, closePaperPosition, getPaperPositionsAsLive, getPaperPositionCount, getPaperPerformanceSummary } from "./paper-tracker.js";
+import { takeDailySnapshot, formatDailyPnlMessage, formatDailyLessons, hasSnapshotToday, getLastSnapshotDate, getDailyPnlHistory, getCumulativeStats } from "./daily-pnl.js";
 
 const entrypointPath = process.env.pm_exec_path || process.argv[1];
 const isMain = entrypointPath
@@ -190,6 +192,38 @@ async function maybeRunMissedBriefing() {
   await runBriefing();
 }
 
+// ─── Daily PnL Snapshot ──────────────────────────────────────────
+
+async function runDailyPnl() {
+  log("cron", "Taking daily PnL snapshot");
+  try {
+    const snapshot = takeDailySnapshot();
+    if (telegramEnabled()) {
+      const msg = formatDailyPnlMessage(snapshot);
+      await sendHTML(msg);
+    }
+    log("daily_pnl", `Daily PnL snapshot complete: net ${snapshot.net_pnl_usd >= 0 ? "+" : ""}$${snapshot.net_pnl_usd}`);
+  } catch (error) {
+    log("cron_error", `Daily PnL snapshot failed: ${error.message}`);
+  }
+}
+
+/**
+ * If the agent restarted after the daily PnL cron window,
+ * fire the snapshot immediately so it's never skipped.
+ */
+async function maybeRunMissedPnlSnapshot() {
+  if (hasSnapshotToday()) return; // already taken today
+
+  const nowUtc = new Date();
+  const pnlHourUtc = 17; // 5:00 PM UTC = midnight UTC+7
+  if (nowUtc.getUTCHours() < pnlHourUtc) return; // too early, cron will handle it
+
+  const lastDate = getLastSnapshotDate();
+  log("cron", `Missed daily PnL snapshot detected (last: ${lastDate || "never"}) — running now`);
+  await runDailyPnl();
+}
+
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
   if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
@@ -212,6 +246,34 @@ export async function runManagementCycle({ silent = false } = {}) {
     }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
+
+    // ── Paper trading: update simulated positions in dry-run ─────
+    if (process.env.DRY_RUN === "true") {
+      try {
+        const paperUpdate = await updatePaperPositions();
+        if (paperUpdate.updated > 0) {
+          log("paper", `Management: updated ${paperUpdate.updated} paper position(s)`);
+        }
+
+        // Auto-close paper positions that hit exit rules
+        const exits = checkPaperExits();
+        for (const exit of exits) {
+          log("paper", `Auto-closing paper position ${exit.id}: ${exit.reason}`);
+          await closePaperPosition(exit.id, exit.reason);
+        }
+
+        // If no real positions, inject remaining paper positions
+        if (positions.length === 0) {
+          const paperData = getPaperPositionsAsLive();
+          if (paperData.positions.length > 0) {
+            positions = paperData.positions;
+            log("paper", `Management: using ${positions.length} paper position(s)`);
+          }
+        }
+      } catch (e) {
+        log("paper_error", `Paper tracking failed in management: ${e.message}`);
+      }
+    }
 
     if (positions.length === 0) {
       log("cron", "No open positions — triggering screening cycle");
@@ -608,6 +670,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     let deployAttempted = false;
     let deploySucceeded = false;
+    let _paperDeployArgs   = null;   // dry-run: args passed to deploy_position
+    let _paperDeployResult = null;   // dry-run: tool result from deploy_position
     const { content } = await agentLoop(`
 SCREENING CYCLE
 ${strategyBlock}
@@ -616,8 +680,14 @@ Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${
 PRE-LOADED CANDIDATES (${passing.length} pools):
 ${candidateBlocks.join("\n\n")}
 
+THRESHOLDS (from config — use these, do NOT invent your own):
+- Minimum fee/TVL: ${config.management.minFeePerTvl24h}% (pools above this are acceptable yield)
+- Stop loss: ${config.management.stopLossPct}% | Take profit: ${config.management.takeProfitPct}%
+
 STEPS:
-1. Decide if any candidate is actually worth deploying. One surviving candidate is not automatically good enough.
+1. These candidates already passed hard filters. Be AGGRESSIVE about deploying — we are in learning mode.
+   Only skip if: wash trading, rugpull risk with no smart wallets, or truly terrible metrics.
+   Do NOT reject pools just for moderate fee/TVL — anything above ${config.management.minFeePerTvl24h}% is acceptable.
 2. Pick the best candidate based on narrative quality, smart wallets, and pool metrics.
 3. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
    bins_below = round(${config.strategy.minBinsBelow} + (candidate volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}].
@@ -680,8 +750,11 @@ IMPORTANT:
 - Never write "unknown" for OKX. Use real values, omit missing fields, or write exactly "OKX: unavailable".
 - Keep the whole report compact and highly scannable for Telegram.
       `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
-        onToolStart: async ({ name }) => {
-          if (name === "deploy_position") deployAttempted = true;
+        onToolStart: async ({ name, args }) => {
+          if (name === "deploy_position") {
+            deployAttempted = true;
+            if (process.env.DRY_RUN === "true") _paperDeployArgs = args ?? null;
+          }
           await liveMessage?.toolStart(name);
         },
         onToolFinish: async ({ name, result, success }) => {
@@ -761,6 +834,16 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
+  // Daily PnL snapshot at 11:59 PM UTC+7 (4:59 PM UTC)
+  const dailyPnlTask = cron.schedule(`59 16 * * *`, async () => {
+    await runDailyPnl();
+  }, { timezone: 'UTC' });
+
+  // Every 6h — catch up if daily PnL was missed
+  const dailyPnlWatchdog = cron.schedule(`30 */6 * * *`, async () => {
+    await maybeRunMissedPnlSnapshot();
+  }, { timezone: 'UTC' });
+
   // Lightweight 30s PnL poller — updates trailing TP state between management cycles, no LLM
   let _pnlPollBusy = false;
   const pnlPollInterval = setInterval(async () => {
@@ -815,7 +898,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, 30_000);
 
-  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
+  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, dailyPnlTask, dailyPnlWatchdog];
   // Store interval ref so stopCronJobs can clear it
   _cronTasks._pnlPollInterval = pnlPollInterval;
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
@@ -1273,6 +1356,10 @@ function formatHelpText() {
     "/candidates — show latest cached candidates",
     "/deploy <n> — deploy candidate by cached index",
     "/briefing — morning briefing",
+    "/pnl — daily PnL snapshot",
+    "/pnl week — 7-day PnL summary",
+    "/lesson — daily lessons learned",
+    "/lesson YYYY-MM-DD — lessons for specific date",
     "/hive — HiveMind sync status",
     "/hive pull — manual HiveMind pull now",
     "/pause — stop cron cycles",
@@ -1392,20 +1479,73 @@ async function telegramHandler(msg) {
     await showSettingsMenu().catch((e) => sendMessage(`Settings error: ${e.message}`).catch(() => {}));
     return;
   }
-  if (_managementBusy || _screeningBusy || busy) {
-    if (_telegramQueue.length < 5) {
-      _telegramQueue.push(msg);
-      sendMessage(`⏳ Queued (${_telegramQueue.length} in queue): "${text.slice(0, 60)}"`).catch(() => {});
-    } else {
-      sendMessage("Queue is full (5 messages). Wait for the agent to finish.").catch(() => {});
-    }
-    return;
-  }
 
+  // ── Quick read-only commands — bypass the busy guard ──────────────────
   if (text === "/briefing") {
     try {
       const briefing = await generateBriefing();
       await sendHTML(briefing);
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/pnl" || text === "/dailypnl") {
+    try {
+      const snapshot = takeDailySnapshot();
+      const msg = formatDailyPnlMessage(snapshot);
+      await sendHTML(msg);
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/lesson" || text === "/lessons" || text.startsWith("/lesson ")) {
+    try {
+      const dateMatch = text.match(/\/lessons?\s+(\d{4}-\d{2}-\d{2})/i);
+      const dateArg = dateMatch ? dateMatch[1] : undefined;
+      // Ensure a fresh snapshot exists before generating lessons
+      if (!dateArg) takeDailySnapshot();
+      const msg = formatDailyLessons({ date: dateArg });
+      await sendHTML(msg);
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/pnl week" || text === "/pnl 7d") {
+    try {
+      const history = getDailyPnlHistory(7);
+      const cumulative = getCumulativeStats();
+      if (!history.length) {
+        await sendMessage("No daily PnL history yet. Run /pnl to take the first snapshot.");
+        return;
+      }
+      const lines = [
+        `📊 <b>7-DAY PnL HISTORY</b>`,
+        ``,
+      ];
+      for (const day of history) {
+        const icon = day.is_green_day ? "🟢" : "🔴";
+        const sign = day.net_pnl_usd >= 0 ? "+" : "";
+        lines.push(`${icon} ${day.date} | ${sign}$${Math.abs(day.net_pnl_usd).toFixed(2)} | ${day.activity?.closed || 0} trades | WR ${day.realized?.win_rate_pct ?? "—"}%`);
+      }
+      if (cumulative) {
+        lines.push(``);
+        lines.push(`━━━ <b>CUMULATIVE</b> ━━━`);
+        lines.push(``);
+        lines.push(`  Total PnL: <b>${cumulative.total_net_pnl_usd >= 0 ? "+" : ""}$${Math.abs(cumulative.total_net_pnl_usd).toFixed(2)}</b>`);
+        lines.push(`  Fees:      +$${cumulative.total_fees_usd.toFixed(2)}`);
+        lines.push(`  Trades:    ${cumulative.total_trades}`);
+        lines.push(`  Days:      ${cumulative.green_days}🟢 / ${cumulative.red_days}🔴 (${cumulative.green_day_pct}% green)`);
+        lines.push(`  Avg/day:   ${cumulative.avg_daily_pnl_usd >= 0 ? "+" : ""}$${Math.abs(cumulative.avg_daily_pnl_usd).toFixed(2)}`);
+        if (cumulative.best_day) lines.push(`  Best:      ${cumulative.best_day.date} (+$${Math.abs(cumulative.best_day.pnl).toFixed(2)})`);
+        if (cumulative.worst_day) lines.push(`  Worst:     ${cumulative.worst_day.date} (-$${Math.abs(cumulative.worst_day.pnl).toFixed(2)})`);
+      }
+      await sendHTML(lines.join("\n"));
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }
@@ -1435,11 +1575,37 @@ async function telegramHandler(msg) {
     return;
   }
 
+  // ── Busy guard — only blocks commands that need the agent loop ────────
+  if (_managementBusy || _screeningBusy || busy) {
+    if (_telegramQueue.length < 5) {
+      _telegramQueue.push(msg);
+      sendMessage(`⏳ Queued (${_telegramQueue.length} in queue): "${text.slice(0, 60)}"`).catch(() => {});
+    } else {
+      sendMessage("Queue is full (5 messages). Wait for the agent to finish.").catch(() => {});
+    }
+    return;
+  }
+
   if (text === "/positions") {
     try {
       const { positions, total_positions } = await getMyPositions({ force: true });
-      if (total_positions === 0) { await sendMessage("No open positions."); return; }
       const cur = config.management.solMode ? "◎" : "$";
+
+      // Show paper positions in dry-run mode
+      if (total_positions === 0 && process.env.DRY_RUN === "true") {
+        const paperData = getPaperPositionsAsLive();
+        if (paperData.positions.length === 0) { await sendMessage("No open positions (live or paper)."); return; }
+        const lines = paperData.positions.map((p, i) => {
+          const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
+          const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
+          const oor = !p.in_range ? " ⚠️OOR" : "";
+          return `${i + 1}. 📝${p.pair} | ${cur}${p.total_value_usd ?? "?"} | PnL: ${pnl} (${p.pnl_pct}%) | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
+        });
+        await sendMessage(`📊 Paper Positions (${paperData.positions.length}):\n\n${lines.join("\n")}\n\n/close <n> to close`);
+        return;
+      }
+
+      if (total_positions === 0) { await sendMessage("No open positions."); return; }
       const lines = positions.map((p, i) => {
         const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
         const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
@@ -1883,6 +2049,16 @@ Commands:
         console.log(formatCandidates(candidates));
         console.log();
       });
+      return;
+    }
+
+    if (input === "/lesson" || input.startsWith("/lesson ")) {
+      const dateMatch = input.match(/\/lesson\s+(\d{4}-\d{2}-\d{2})/i);
+      const dateArg = dateMatch ? dateMatch[1] : undefined;
+      if (!dateArg) takeDailySnapshot();
+      const msg = formatDailyLessons({ date: dateArg });
+      console.log(`\n${msg.replace(/<[^>]*>/g, "")}\n`);
+      rl.prompt();
       return;
     }
 

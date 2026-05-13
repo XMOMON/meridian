@@ -12,6 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
+import { createPaperPosition, closePaperPosition, findPaperPositionByPool } from "../paper-tracker.js";
 import { setPositionInstruction } from "../state.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
@@ -594,6 +595,41 @@ export async function executeTool(name, args) {
       success,
     });
 
+    // ─── Paper trading hooks (dry-run only) ─────────────────────
+    if (result?.dry_run && process.env.DRY_RUN === "true") {
+      if (name === "deploy_position" && result.would_deploy) {
+        try {
+          const paperPos = await createPaperPosition(args, result);
+          if (paperPos) {
+            result.paper_position = paperPos.id;
+            result.paper_pair = paperPos.pair;
+            result.paper_entry_price = paperPos.entry_price_usd;
+            result.paper_initial_value_usd = paperPos.initial_value_usd;
+            log("paper", `Executor: paper position created for ${paperPos.pair}`);
+          }
+        } catch (e) {
+          log("paper_error", `Failed to create paper position: ${e.message}`);
+        }
+      } else if (name === "close_position" && result.would_close) {
+        try {
+          const paperPos = findPaperPositionByPool(args.pool_address)
+            || (args.position_address ? { id: args.position_address } : null);
+          if (paperPos) {
+            const closed = await closePaperPosition(paperPos.id, args.reason || "agent_close");
+            if (closed) {
+              result.paper_closed = true;
+              result.paper_pnl_pct = closed.pnl_pct;
+              result.paper_total_return_pct = closed.total_return_pct;
+              result.paper_fees_usd = closed.simulated_fees_usd;
+              log("paper", `Executor: paper position closed for ${closed.pair}`);
+            }
+          }
+        } catch (e) {
+          log("paper_error", `Failed to close paper position: ${e.message}`);
+        }
+      }
+    }
+
     if (success) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
@@ -737,15 +773,18 @@ async function runSafetyChecks(name, args) {
 
       // Check position count limit + duplicate pool guard — force fresh scan to avoid stale cache
       const positions = await getMyPositions({ force: true });
-      if (positions.total_positions >= config.risk.maxPositions) {
+      // In dry-run mode, also count paper positions toward the limit
+      const { getPaperPositionCount: paperCount, findPaperPositionByPool: paperByPool } = await import("../paper-tracker.js");
+      const totalPositions = positions.total_positions + (process.env.DRY_RUN === "true" ? paperCount() : 0);
+      if (totalPositions >= config.risk.maxPositions) {
         return {
           pass: false,
-          reason: `Max positions (${config.risk.maxPositions}) reached. Close a position first.`,
+          reason: `Max positions (${config.risk.maxPositions}) reached (${positions.total_positions} live + ${totalPositions - positions.total_positions} paper). Close a position first.`,
         };
       }
       const alreadyInPool = positions.positions.some(
         (p) => p.pool === args.pool_address
-      );
+      ) || (process.env.DRY_RUN === "true" && paperByPool(args.pool_address));
       if (alreadyInPool) {
         return {
           pass: false,

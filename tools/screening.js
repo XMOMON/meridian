@@ -526,6 +526,11 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         pushFilteredReason(filteredOut, p, `volatility ${p.volatility ?? "unknown"} is unusable`);
         return false;
       }
+      const maxVol = config.screening.maxVolatility;
+      if (maxVol != null && Number(p.volatility) > maxVol) {
+        pushFilteredReason(filteredOut, p, `volatility ${Number(p.volatility).toFixed(1)} above maxVolatility ${maxVol}`);
+        return false;
+      }
       if (occupiedPools.has(p.pool)) {
         pushFilteredReason(filteredOut, p, "already have an open position in this pool");
         return false;

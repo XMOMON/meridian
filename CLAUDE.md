@@ -21,6 +21,7 @@ hivemind.js         Agent Meridian HiveMind sync
 smart-wallets.js    KOL/alpha wallet tracker (smart-wallets.json)
 token-blacklist.js  Permanent token blacklist (token-blacklist.json)
 logger.js           Daily-rotating log files + action audit trail
+daily-pnl.js        Daily PnL snapshots every 24h (daily-pnl.json) + Telegram report
 
 tools/
   definitions.js    Tool schemas in OpenAI format (what LLM sees)
