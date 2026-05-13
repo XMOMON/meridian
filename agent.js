@@ -170,6 +170,12 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   let providerMode = "system";
   let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
 
+  // ── Model rotation pool ──────────────────────────────────────
+  const primaryModel = model || DEFAULT_MODEL;
+  const fallbackModels = (config.llm.fallbackModels || []).filter(m => m !== primaryModel);
+  const modelPool = [primaryModel, ...fallbackModels];
+  let modelPoolIndex = 0;
+
   // Track write tools fired this session — prevent the model from calling the same
   // destructive tool twice (e.g. deploy twice, swap twice after auto-swap)
   const ONCE_PER_SESSION = new Set(["deploy_position", "swap_token", "close_position"]);
@@ -185,12 +191,10 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     log("agent", `Step ${step + 1}/${maxSteps}`);
 
     try {
-      const activeModel = model || DEFAULT_MODEL;
+      let usedModel = modelPool[modelPoolIndex];
 
       // Retry up to 3 times on transient provider errors (502, 503, 529)
-      const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";
       let response;
-      let usedModel = activeModel;
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
       let toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
@@ -225,9 +229,11 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         const errCode = response.error?.code;
         if (errCode === 502 || errCode === 503 || errCode === 529) {
           const wait = (attempt + 1) * 5000;
-          if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
-            usedModel = FALLBACK_MODEL;
-            log("agent", `Switching to fallback model ${FALLBACK_MODEL}`);
+          // On HTTP errors, rotate to next model in pool
+          if (attempt >= 1 && modelPool.length > 1) {
+            modelPoolIndex = (modelPoolIndex + 1) % modelPool.length;
+            usedModel = modelPool[modelPoolIndex];
+            log("agent", `HTTP ${errCode} — rotating to model: ${usedModel}`);
           } else {
             log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
             await new Promise((r) => setTimeout(r, wait));
@@ -276,10 +282,22 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         if (mustUseRealTool && !sawToolCall) {
           noToolRetryCount += 1;
           messages.pop();
-          log("agent", `Rejected no-tool final answer (${noToolRetryCount}/2) for tool-required request`);
-          if (noToolRetryCount >= 2) {
+          log("agent", `Rejected no-tool final answer (${noToolRetryCount}) for tool-required request [model: ${usedModel}]`);
+
+          // After 2 failures with current model, rotate to next model in pool
+          if (noToolRetryCount % 2 === 0 && modelPool.length > 1) {
+            modelPoolIndex = (modelPoolIndex + 1) % modelPool.length;
+            usedModel = modelPool[modelPoolIndex];
+            log("agent", `🔄 Model rotation: switching to ${usedModel} (${modelPoolIndex + 1}/${modelPool.length})`);
+            // Reset messages to clean state for new model
+            messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
+          }
+
+          // Give up after trying all models (2 attempts each)
+          if (noToolRetryCount >= modelPool.length * 2) {
+            log("agent", `All ${modelPool.length} models failed to make tool calls — giving up`);
             return {
-              content: "I couldn't complete that reliably because no tool call was made. Please retry after checking the logs.",
+              content: `All ${modelPool.length} models failed to make tool calls. Models tried: ${modelPool.join(", ")}. Check OpenRouter status or model availability.`,
               userMessage: goal,
             };
           }
