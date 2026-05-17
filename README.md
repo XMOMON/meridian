@@ -14,6 +14,10 @@
 
 ---
 
+> ⚠️ **Experimental** — This bot is under active development and is not yet consistently profitable. The learning system is evolving and parameters are being tuned. Always use `DRY_RUN=true` (paper trading) to evaluate before risking real funds.
+
+---
+
 **Meridian** is an autonomous AI-powered agent that manages liquidity positions on **Meteora DLMM pools** across Solana. It screens opportunities, deploys capital, monitors positions in real-time, and learns from every trade to continuously improve its strategy.
 
 [Getting Started](#-quick-start) · [Features](#-features) · [Architecture](#-architecture) · [Config](#-config-reference)
