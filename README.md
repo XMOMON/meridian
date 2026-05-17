@@ -503,6 +503,12 @@ Always start with `DRY_RUN=true`. Never deploy more than you can afford to lose.
 
 ---
 
+## 🙏 Credits
+
+Forked from [yunus-0x/meridian](https://github.com/yunus-0x/meridian) — the original Meridian DLMM agent. Big thanks to the creator for building the foundation.
+
+---
+
 ## ☕ Support
 
 If Meridian helped you or you want to support development:
