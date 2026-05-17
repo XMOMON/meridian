@@ -503,6 +503,18 @@ Always start with `DRY_RUN=true`. Never deploy more than you can afford to lose.
 
 ---
 
+## ☕ Support
+
+If Meridian helped you or you want to support development:
+
+**Solana (SOL / SPL tokens):**
+
+```
+CYeQiqU2Fb3unSF9kseucNZzMEPmeevFVkhhfHcr4G6J
+```
+
+---
+
 **Built with ☕ and Solana**
 
 </div>
