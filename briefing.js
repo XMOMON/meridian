@@ -142,40 +142,60 @@ function generateLPInsight(closedPositions, openPositions) {
 }
 
 function generateLearningTip(closedPositions, decisions) {
-  const tips = [
-    "💡 <b>LP Basics:</b> Your profit = fees earned − impermanent loss. Wider ranges = less IL but less fee concentration.",
-    "💡 <b>Bin Step:</b> Higher bin step = wider price intervals per bin. Good for volatile tokens, bad for stable pairs.",
-    "💡 <b>OOR Risk:</b> When price exits your range, you stop earning fees but keep IL exposure. That's the worst spot.",
-    "💡 <b>Fee/TVL Ratio:</b> This is your yield gauge. Higher = more fees per dollar of TVL. Below 1% is usually not worth it.",
-    "💡 <b>Trailing TP:</b> Locks profits by tracking the peak PnL and closing when it drops by X%. Prevents giving back gains.",
-    "💡 <b>Single-Side SOL:</b> You only deposit SOL (no token). You earn fees when price drops into your range, but absorb IL if it keeps dropping.",
-    "💡 <b>Volatility &amp; Bins:</b> High volatility pools need more bins_below for safety. The bot scales this automatically.",
-    "💡 <b>Organic Score:</b> Measures real human trading vs wash trading. Below 50 = suspicious activity.",
-    "💡 <b>Smart Wallets:</b> When known profitable wallets are in a pool, it's a strong confidence signal.",
-    "💡 <b>Position Sizing:</b> Never put more than 25-35% of available capital in one position. Diversify across pools.",
-    "💡 <b>Token Age:</b> Very new tokens (under 2h) are higher risk but higher reward. Established tokens (24h+) are safer but lower yield.",
-    "💡 <b>Bundle %:</b> High bundle % means coordinated buying (potential pump &amp; dump). Stay cautious above 30%.",
-  ];
+  // Data-driven tip from actual trade history — not generic textbook advice
+  try {
+    const profileData = loadJson("./trade-profile.json");
+    if (profileData) {
+      const tips = [];
 
-  // Pick a tip based on recent performance patterns
-  const recentLosses = closedPositions.filter(p => (p.total_return_usd || p.pnl_usd || 0) < 0);
-  const recentWins = closedPositions.filter(p => (p.total_return_usd || p.pnl_usd || 0) > 0);
+      // Best hold time insight
+      if (profileData.best_hold_time && profileData.worst_hold_time) {
+        tips.push(`💡 <b>Your data says:</b> ${profileData.best_hold_time.bucket} holds win ${profileData.best_hold_time.win_rate}% of the time (${profileData.best_hold_time.count} trades). Avoid ${profileData.worst_hold_time.bucket} — only ${profileData.worst_hold_time.win_rate}% win rate.`);
+      }
 
-  // Contextual tip selection
-  if (recentLosses.length > recentWins.length * 2) {
-    // Losing streak — focus on risk management
-    const riskTips = tips.filter(t => /risk|stop|loss|IL|OOR/i.test(t));
-    if (riskTips.length > 0) return riskTips[Math.floor(Math.random() * riskTips.length)];
-  }
-  if (recentWins.length > recentLosses.length * 2) {
-    // Winning streak — teach about optimization
-    const optTips = tips.filter(t => /trailing|fee|yield|sizing/i.test(t));
-    if (optTips.length > 0) return optTips[Math.floor(Math.random() * optTips.length)];
-  }
+      // Volatility insight
+      if (profileData.best_volatility && profileData.worst_volatility) {
+        tips.push(`💡 <b>Volatility sweet spot:</b> ${profileData.best_volatility.bucket} pools win ${profileData.best_volatility.win_rate}% vs ${profileData.worst_volatility.win_rate}% for ${profileData.worst_volatility.bucket}. Stick to what works.`);
+      }
 
-  // Random tip
-  const dayIndex = new Date().getDate();
-  return tips[dayIndex % tips.length];
+      // Fee recovery
+      if (profileData.fee_recovery) {
+        const fr = profileData.fee_recovery;
+        if (fr.fees_vs_il_ratio != null && fr.fees_vs_il_ratio < 1) {
+          tips.push(`💡 <b>Fee gap:</b> Fees only cover ${Math.round(fr.fees_vs_il_ratio * 100)}% of losses. Need higher fee/TVL pools or shorter holds to close this gap.`);
+        } else if (fr.fees_vs_il_ratio != null && fr.fees_vs_il_ratio >= 1) {
+          tips.push(`💡 <b>Fees are working:</b> Fee income covers ${Math.round(fr.fees_vs_il_ratio * 100)}% of IL. Keep selecting high fee/TVL pools.`);
+        }
+      }
+
+      // Stop loss insight
+      const slData = profileData.by_close_reason?.stop_loss;
+      if (slData && slData.count >= 3) {
+        tips.push(`💡 <b>Stop losses:</b> ${slData.count} triggered at avg $${Math.abs(slData.avg_pnl).toFixed(2)} loss each. They saved you from deeper damage — the system is protecting capital.`);
+      }
+
+      // Repeat losers warning
+      if (profileData.last_24h?.repeat_losers?.length > 0) {
+        const names = profileData.last_24h.repeat_losers.map(r => r.token).join(", ");
+        tips.push(`💡 <b>Repeat trap:</b> ${names} lost money multiple times in 24h. The bot now flags these to avoid re-entry.`);
+      }
+
+      // Trend
+      if (profileData.last_24h?.trend === "declining") {
+        tips.push(`💡 <b>Trend alert:</b> Win rate is declining vs prior period. The bot is tightening filters automatically to adapt.`);
+      } else if (profileData.last_24h?.trend === "improving") {
+        tips.push(`💡 <b>Improving:</b> Win rate is trending up. Recent config adjustments are paying off.`);
+      }
+
+      if (tips.length > 0) {
+        // Rotate through data-driven tips by day
+        return tips[new Date().getDate() % tips.length];
+      }
+    }
+  } catch { /* fallback below */ }
+
+  // Fallback if no trade profile yet
+  return "💡 <b>Getting started:</b> The bot builds a statistical profile after 5+ closed trades. It gets smarter with every position.";
 }
 
 function getRecentDecisions(limit = 20) {
@@ -202,6 +222,177 @@ function getDeployScreeningStats(decisions) {
       : 0,
   };
 }
+
+function humanizeLesson(lesson) {
+  const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Extract pool name from context or rule
+  const poolName = (lesson.context || lesson.rule || "").match(/^(?:FAILED:\s*)?([A-Za-z0-9_]+-SOL)/)?.[1] || null;
+  const tokenName = poolName ? poolName.split("-")[0] : null;
+
+  // Evolution / config change lessons
+  if (lesson.tags?.includes("evolution") || lesson.tags?.includes("config_change")) {
+    const rule = lesson.rule || "";
+    const paramMatch = rule.match(/\]\s*(\w+)=([\d.]+)/);
+    const fromMatch = rule.match(/from\s+([\d.]+)/);
+    if (paramMatch) {
+      const param = paramMatch[1].replace(/([A-Z])/g, " $1").toLowerCase().trim();
+      const newVal = paramMatch[2];
+      const fromVal = fromMatch?.[1];
+      const posMatch = rule.match(/@\s*(\d+)\s*positions/);
+      const posCount = posMatch?.[1];
+      let msg = `Auto-tuned <b>${esc(param)}</b> to ${newVal}`;
+      if (fromVal) msg += ` (was ${fromVal})`;
+      if (posCount) msg += ` after analyzing ${posCount} trades`;
+      msg += ". Future screening will use this tighter filter.";
+      return msg;
+    }
+    return esc(rule);
+  }
+
+  // Failed trade lessons — with actionable next step
+  if (lesson.outcome === "bad" && lesson.pnl_pct != null) {
+    const pnl = Math.abs(lesson.pnl_pct).toFixed(1);
+    const fees = lesson.fees_earned_usd != null ? `$${lesson.fees_earned_usd.toFixed(2)}` : null;
+    const reason = lesson.close_reason || "";
+    const vol = lesson.context?.match(/volatility=([\d.]+)/)?.[1];
+    const rangeEff = lesson.range_efficiency;
+
+    let msg = poolName
+      ? `Lost ${pnl}% on <b>${esc(poolName)}</b>`
+      : `Lost ${pnl}% on a position`;
+
+    // What happened
+    if (/stop.?loss/i.test(reason)) msg += " — hit stop loss";
+    else if (/trailing/i.test(reason)) msg += " — trailing TP triggered on the way down";
+    else if (/out.?of.?range|oor/i.test(reason)) msg += " — price went out of range";
+    else if (/low.?yield/i.test(reason)) msg += " — yield dried up";
+    else if (/max.?hold|time/i.test(reason)) msg += " — held too long without profit";
+    else if (reason) msg += ` — ${esc(reason.split(":")[0].trim().toLowerCase())}`;
+
+    if (fees) msg += `. Fees only covered ${fees}`;
+    msg += ".";
+
+    // What to do about it (the actionable part)
+    msg += "\n     → ";
+    if (/stop.?loss/i.test(reason)) {
+      if (vol && parseFloat(vol) > 3) {
+        msg += `High volatility (${vol}) caused a fast drop. Will skip pools above this volatility level.`;
+      } else {
+        msg += `Will avoid similar setups. ${tokenName ? `${tokenName} added to caution list.` : "Tightening entry filters."}`;
+      }
+    } else if (/out.?of.?range|oor/i.test(reason)) {
+      if (rangeEff != null && rangeEff < 30) {
+        msg += `Only ${rangeEff.toFixed(0)}% in-range — bin range was too narrow. Will use wider ranges for this volatility.`;
+      } else {
+        msg += `Price moved away too fast. Will prefer lower-volatility pools or widen the bin range.`;
+      }
+    } else if (/low.?yield/i.test(reason)) {
+      msg += `Volume collapsed after entry. Will require higher sustained fee/TVL before deploying.`;
+    } else if (/max.?hold|time/i.test(reason)) {
+      msg += `Position sat too long without hitting TP. Will look for faster-moving pools or tighten TP target.`;
+    } else {
+      msg += `Reviewing this pool type to avoid repeating the same entry.`;
+    }
+
+    return msg;
+  }
+
+  // Successful trade lessons — with what worked
+  if (lesson.outcome === "good" && lesson.pnl_pct != null) {
+    const pnl = lesson.pnl_pct.toFixed(1);
+    const fees = lesson.fees_earned_usd != null ? `$${lesson.fees_earned_usd.toFixed(2)}` : null;
+    const rangeEff = lesson.range_efficiency;
+
+    let msg = poolName
+      ? `Gained ${pnl}% on <b>${esc(poolName)}</b>`
+      : `Gained ${pnl}% on a position`;
+    if (fees) msg += ` with ${fees} in fees`;
+    msg += ".";
+
+    // What worked
+    msg += "\n     → ";
+    if (rangeEff != null && rangeEff > 80) {
+      msg += `Excellent ${rangeEff.toFixed(0)}% in-range time. This pool type and bin sizing works — will favor similar setups.`;
+    } else if (parseFloat(pnl) > 5) {
+      msg += `Strong gain. Will look for more pools with similar characteristics.`;
+    } else {
+      msg += `Solid small win. Consistent setups like this compound over time.`;
+    }
+
+    return msg;
+  }
+
+  // Fallback: clean up the raw rule string
+  const raw = String(lesson.rule || "unknown lesson");
+  const cleaned = raw
+    .replace(/\d+\.\d{4,}/g, (m) => parseFloat(m).toFixed(2))
+    .replace(/undefined/g, "n/a")
+    .replace(/[←→]/g, "→");
+  return esc(cleaned.length > 120 ? cleaned.slice(0, 117) + "..." : cleaned);
+}
+
+function summarizeLessons(lessons, perfLast24h) {
+  // Count lesson types
+  const counts = { stop_loss: 0, oor: 0, low_yield: 0, max_hold: 0, good: 0, evolved: 0, other: 0 };
+  for (const l of lessons) {
+    if (l.tags?.includes("evolution") || l.tags?.includes("config_change")) { counts.evolved++; continue; }
+    const reason = l.close_reason || l.rule || "";
+    if (l.outcome === "good") counts.good++;
+    else if (/stop.?loss/i.test(reason)) counts.stop_loss++;
+    else if (/out.?of.?range|oor/i.test(reason)) counts.oor++;
+    else if (/low.?yield/i.test(reason)) counts.low_yield++;
+    else if (/max.?hold|time/i.test(reason)) counts.max_hold++;
+    else if (l.outcome === "bad") counts.other++;
+  }
+
+  const parts = [];
+
+  // What went wrong
+  const problems = [];
+  if (counts.stop_loss > 0) problems.push(`${counts.stop_loss} hit stop loss`);
+  if (counts.oor > 0) problems.push(`${counts.oor} went out of range`);
+  if (counts.low_yield > 0) problems.push(`${counts.low_yield} had yield dry up`);
+  if (counts.max_hold > 0) problems.push(`${counts.max_hold} held too long`);
+  if (counts.other > 0) problems.push(`${counts.other} closed for other reasons`);
+
+  if (problems.length > 0) {
+    parts.push(`From ${lessons.length} new lessons: ${problems.join(", ")}.`);
+  }
+
+  // What to do about it (one combined action)
+  const actions = [];
+  if (counts.stop_loss >= 2) actions.push("tightening volatility filters to avoid fast drops");
+  else if (counts.stop_loss === 1) actions.push("watching volatility on entries");
+  if (counts.oor >= 2) actions.push("widening bin ranges for better coverage");
+  if (counts.low_yield >= 2) actions.push("raising fee/TVL floor to skip pools with weak volume");
+  if (counts.max_hold >= 2) actions.push("shortening max hold time to cut dead-weight positions faster");
+
+  if (actions.length > 0) {
+    parts.push(`Adapting by ${actions.join(" and ")}.`);
+  }
+
+  // What worked
+  if (counts.good > 0) {
+    parts.push(`${counts.good} winning trade${counts.good > 1 ? "s" : ""} confirmed the current strategy works when pools are picked right.`);
+  }
+
+  // Config evolution
+  if (counts.evolved > 0) {
+    parts.push(`Auto-tuned ${counts.evolved} config parameter${counts.evolved > 1 ? "s" : ""} based on the data.`);
+  }
+
+  // Net direction
+  if (perfLast24h && perfLast24h.length > 0) {
+    const winRate = Math.round((perfLast24h.filter(p => p.pnl_usd > 0).length / perfLast24h.length) * 100);
+    if (winRate >= 60) parts.push("Overall execution was solid — keep the current approach.");
+    else if (winRate >= 45) parts.push("Mixed results — the bot is adjusting filters to improve hit rate.");
+    else parts.push("Tough day — the bot is learning and tightening entry criteria for tomorrow.");
+  }
+
+  return parts.join(" ") || "No significant patterns to report today.";
+}
+
 
 export async function generateBriefing() {
   const state = loadJson(STATE_FILE) || { positions: {}, recentEvents: [], paperPositions: {}, closedPaperPositions: [] };
@@ -332,12 +523,8 @@ export async function generateBriefing() {
   L.push(``);
 
   if (lessonsLast24h.length > 0) {
-    L.push(`  <b>New lessons:</b>`);
-    for (const l of lessonsLast24h.slice(0, 3)) {
-      const safeRule = String(l.rule || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      L.push(`  💡 ${safeRule}`);
-    }
-    if (lessonsLast24h.length > 3) L.push(`  ... +${lessonsLast24h.length - 3} more`);
+    L.push(`  <b>What I learned today:</b>`);
+    L.push(`  ${summarizeLessons(lessonsLast24h, perfLast24h)}`);
     L.push(``);
   }
 

@@ -241,9 +241,6 @@ export async function runManagementCycle({ silent = false } = {}) {
   const screeningCooldownMs = 5 * 60 * 1000;
 
   try {
-    if (!silent && telegramEnabled()) {
-      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
-    }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
 
@@ -277,9 +274,14 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     if (positions.length === 0) {
       log("cron", "No open positions — triggering screening cycle");
-      mgmtReport = "No open positions. Triggering screening cycle.";
+      mgmtReport = null; // suppress Telegram — screening cycle sends its own report
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
       return mgmtReport;
+    }
+
+    // Only create the live Telegram message once we know there are positions to evaluate
+    if (!silent && telegramEnabled()) {
+      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
     }
 
     // Snapshot + load pool memory
@@ -443,6 +445,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
     log("cron", "Screening skipped — previous cycle still running");
     return null;
   }
+
+  // Time-of-day filter — only screen during profitable hours
+  const activeHours = config.schedule.screeningActiveHoursUtc;
+  if (Array.isArray(activeHours) && activeHours.length > 0) {
+    const currentHourUtc = new Date().getUTCHours();
+    if (!activeHours.includes(currentHourUtc)) {
+      log("cron", `Screening skipped — outside active hours (current: ${currentHourUtc} UTC, allowed: ${activeHours.join(",")})`);
+      return null;
+    }
+  }
+
   _screeningBusy = true; // set immediately — prevents TOCTOU race with concurrent callers
   _screeningLastTriggered = Date.now();
 

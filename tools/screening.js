@@ -116,6 +116,9 @@ function getRawPoolScreeningRejectReason(pool, s) {
   if (!isUsableVolatility(volatility)) {
     return `volatility ${volatility ?? "unknown"} is unusable`;
   }
+  if (s.minVolatility != null && volatility < s.minVolatility) {
+    return `volatility ${volatility} below minVolatility ${s.minVolatility}`;
+  }
   if (baseOrganic == null || baseOrganic < s.minOrganic) {
     return `base organic ${baseOrganic ?? "unknown"} below minOrganic ${s.minOrganic}`;
   }
@@ -529,6 +532,11 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       const maxVol = config.screening.maxVolatility;
       if (maxVol != null && Number(p.volatility) > maxVol) {
         pushFilteredReason(filteredOut, p, `volatility ${Number(p.volatility).toFixed(1)} above maxVolatility ${maxVol}`);
+        return false;
+      }
+      const minVol = config.screening.minVolatility;
+      if (minVol != null && Number(p.volatility) < minVol) {
+        pushFilteredReason(filteredOut, p, `volatility ${Number(p.volatility).toFixed(1)} below minVolatility ${minVol}`);
         return false;
       }
       if (occupiedPools.has(p.pool)) {

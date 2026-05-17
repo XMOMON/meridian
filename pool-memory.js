@@ -211,6 +211,28 @@ export function recordPoolDeploy(poolAddress, deployData) {
     }
   }
 
+  // ── Consecutive-loss cooldown ─────────────────────────────────
+  // If last N deploys on this token are all losses, cool down the token
+  // to prevent re-entering toxic positions (e.g. RoyalPop pattern).
+  {
+    const LOSS_TRIGGER = 2;  // consecutive losses before cooldown
+    const LOSS_COOLDOWN_HOURS = 24;
+    const recentForLoss = entry.deploys.slice(-LOSS_TRIGGER);
+    const consecutiveLosses =
+      recentForLoss.length >= LOSS_TRIGGER &&
+      recentForLoss.every((d) => d.pnl_pct != null && d.pnl_pct < 0);
+
+    if (consecutiveLosses && entry.base_mint) {
+      const reason = `consecutive losses (${LOSS_TRIGGER}x negative PnL)`;
+      const poolCooldownUntil = setPoolCooldown(entry, LOSS_COOLDOWN_HOURS, reason);
+      const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, LOSS_COOLDOWN_HOURS, reason);
+      log("pool-memory", `Loss cooldown set for ${entry.name} until ${poolCooldownUntil} (${reason})`);
+      if (mintCooldownUntil) {
+        log("pool-memory", `Loss cooldown (token) for ${entry.base_mint.slice(0, 8)} until ${mintCooldownUntil} (${reason})`);
+      }
+    }
+  }
+
   save(db);
   log("pool-memory", `Recorded deploy for ${entry.name} (${poolAddress.slice(0, 8)}): PnL ${deploy.pnl_pct}%`);
 }

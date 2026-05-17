@@ -89,6 +89,7 @@ export const config = {
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
     maxVolatility:      u.maxVolatility      ?? null, // null = no cap; e.g. 5.5 = skip pools with volatility > 5.5
+    minVolatility:      u.minVolatility      ?? null, // null = no floor; e.g. 1.5 = skip dead pools
   },
 
   // ─── Position Management ────────────────
@@ -136,6 +137,7 @@ export const config = {
     managementIntervalMin:  u.managementIntervalMin  ?? 10,
     screeningIntervalMin:   u.screeningIntervalMin   ?? 30,
     healthCheckIntervalMin: u.healthCheckIntervalMin ?? 60,
+    screeningActiveHoursUtc: u.screeningActiveHoursUtc ?? null, // null = 24/7; array of UTC hours e.g. [18,19,20,21,22,23]
   },
 
   // ─── LLM Settings ──────────────────────
@@ -269,7 +271,14 @@ export function reloadScreeningThresholds() {
     if (fresh.allowedLaunchpads !== undefined) s.allowedLaunchpads = fresh.allowedLaunchpads;
     if (fresh.blockedLaunchpads !== undefined) s.blockedLaunchpads = fresh.blockedLaunchpads;
     if (fresh.maxVolatility     !== undefined) s.maxVolatility     = fresh.maxVolatility;
+    if (fresh.minVolatility     !== undefined) s.minVolatility     = fresh.minVolatility;
     if (fresh.maxHoldMinutes    !== undefined) config.management.maxHoldMinutes = fresh.maxHoldMinutes;
+    // Risk params (auto-tuned by trade-profile)
+    if (fresh.stopLossPct        !== undefined) config.management.stopLossPct        = fresh.stopLossPct;
+    if (fresh.takeProfitPct      !== undefined) config.management.takeProfitPct      = fresh.takeProfitPct;
+    if (fresh.trailingDropPct    !== undefined) config.management.trailingDropPct    = fresh.trailingDropPct;
+    if (fresh.trailingTriggerPct !== undefined) config.management.trailingTriggerPct = fresh.trailingTriggerPct;
+    if (fresh.outOfRangeWaitMinutes !== undefined) config.management.outOfRangeWaitMinutes = fresh.outOfRangeWaitMinutes;
     const minBinsBelow = numericConfig(fresh.minBinsBelow) ?? config.strategy.minBinsBelow;
     const maxBinsBelow = numericConfig(fresh.maxBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.maxBinsBelow;
     const defaultBinsBelow = numericConfig(fresh.defaultBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.defaultBinsBelow ?? maxBinsBelow;
@@ -279,5 +288,7 @@ export function reloadScreeningThresholds() {
       config.strategy.minBinsBelow,
       Math.min(config.strategy.maxBinsBelow, Math.round(defaultBinsBelow)),
     );
+    // Schedule params
+    if (fresh.screeningActiveHoursUtc !== undefined) config.schedule.screeningActiveHoursUtc = fresh.screeningActiveHoursUtc;
   } catch { /* ignore */ }
 }

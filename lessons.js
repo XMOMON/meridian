@@ -126,6 +126,9 @@ export async function recordPerformance(perf) {
     log("lessons", `New lesson: ${lesson.rule}`);
   }
 
+  // Invalidate PREFER lessons contradicted by subsequent losses
+  invalidateContradictedPrefers(data, entry);
+
   save(data);
   if (lesson) {
     void pushHiveLesson(lesson);
@@ -169,6 +172,33 @@ export async function recordPerformance(perf) {
         log("evolve", `Darwin: adjusted ${wResult.changes.length} signal weight(s)`);
       }
     }
+
+    // Trade profile: rebuild stats + auto-tune risk parameters
+    try {
+      const { buildTradeProfile, applyParamTuning } = await import("./trade-profile.js");
+      const profile = buildTradeProfile();
+      if (profile) {
+        log("trade_profile", `Rebuilt trade profile (${profile.total_trades} trades, ${profile.overall.win_rate}% win rate)`);
+      }
+      if (data.performance.length >= 10) {
+        const tuning = applyParamTuning(config.management);
+        if (tuning.applied) {
+          reloadScreeningThresholds();
+          log("trade_profile", `Auto-tuned risk params: ${JSON.stringify(tuning.changes)}`);
+          // Record as a lesson so it shows in briefing
+          data.lessons.push({
+            id: Date.now() + 1,
+            rule: `[PROFILE-TUNED @ ${data.performance.length} trades] ${Object.entries(tuning.changes).map(([k, v]) => `${k}=${v}`).join(", ")} — ${Object.values(tuning.rationale).join("; ")}`,
+            tags: ["evolution", "config_change", "profile_tune"],
+            outcome: "manual",
+            created_at: new Date().toISOString(),
+          });
+          save(data);
+        }
+      }
+    } catch (e) {
+      log("trade_profile_warn", `Trade profile update failed: ${e.message}`);
+    }
   }
 
   void pushHivePerformanceEvent({
@@ -178,6 +208,58 @@ export async function recordPerformance(perf) {
     eventId: `close:${perf.position}:${entry.recorded_at}`,
   });
 
+}
+
+/**
+ * Remove PREFER lessons for a token when subsequent data contradicts them.
+ * Triggers when a token has 3+ performance records and >50% are losses.
+ */
+function invalidateContradictedPrefers(data, latestEntry) {
+  if (!latestEntry.pool_name) return;
+
+  // Extract token symbol (e.g. "RoyalPop" from "RoyalPop-SOL")
+  const tokenSymbol = latestEntry.pool_name.split("-")[0];
+  if (!tokenSymbol) return;
+
+  // Only check if this was a losing trade
+  if (latestEntry.pnl_pct >= 0) return;
+
+  // Count all performance records for this token
+  const tokenPerfs = data.performance.filter((p) =>
+    p.pool_name && p.pool_name.split("-")[0] === tokenSymbol
+  );
+
+  if (tokenPerfs.length < 3) return; // need enough data
+
+  const losses = tokenPerfs.filter((p) => p.pnl_pct < 0).length;
+  const lossRate = losses / tokenPerfs.length;
+
+  if (lossRate <= 0.5) return; // still above 50% win rate — keep PREFER
+
+  // Find and remove PREFER lessons for this token
+  const beforeCount = data.lessons.length;
+  const removed = [];
+  data.lessons = data.lessons.filter((l) => {
+    if (l.rule && l.rule.startsWith("PREFER:") && l.rule.includes(`${tokenSymbol}-`)) {
+      removed.push(l);
+      return false;
+    }
+    return true;
+  });
+
+  if (removed.length > 0) {
+    log("lessons", `Invalidated ${removed.length} PREFER lesson(s) for ${tokenSymbol} — loss rate ${Math.round(lossRate * 100)}% across ${tokenPerfs.length} trades`);
+    // Add a replacement lesson documenting the invalidation
+    data.lessons.push({
+      id: Date.now(),
+      rule: `AVOID: ${tokenSymbol} — PREFER invalidated after ${losses}/${tokenPerfs.length} losses (${Math.round(lossRate * 100)}% loss rate). Previously looked profitable but subsequent trades showed persistent downside.`,
+      tags: ["invalidated", "avoid"],
+      outcome: "bad",
+      sourceType: "performance",
+      confidence: 0.90,
+      created_at: new Date().toISOString(),
+    });
+  }
 }
 
 /**

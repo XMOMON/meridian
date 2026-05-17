@@ -89,6 +89,7 @@ import { log } from "./logger.js";
 import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
+import { getTradeProfileForPrompt } from "./trade-profile.js";
 import { getDecisionSummary } from "./decision-log.js";
 
 // Supports OpenRouter (default) or any OpenAI-compatible local server (e.g. LM Studio)
@@ -157,6 +158,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
   const decisionSummary = getDecisionSummary();
+  const tradeProfile = getTradeProfileForPrompt();
   let weightsSummary = null;
   if (agentType === "SCREENER") {
     try {
@@ -165,7 +167,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
     } catch { /* signal-weights not critical */ }
   }
-  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary);
+  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary, tradeProfile);
 
   let providerMode = "system";
   let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);

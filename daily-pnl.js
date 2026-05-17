@@ -271,7 +271,7 @@ export function formatDailyPnlMessage(snapshot) {
   L.push(``);
 
   // Net PnL headline
-  const pnlSign = snapshot.net_pnl_usd >= 0 ? "+" : "";
+  const pnlSign = snapshot.net_pnl_usd >= 0 ? "+" : "-";
   L.push(`<b>Net PnL: ${pnlSign}$${Math.abs(snapshot.net_pnl_usd).toFixed(2)}</b>`);
   L.push(``);
 
