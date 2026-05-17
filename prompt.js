@@ -135,8 +135,24 @@ POOL MEMORY: Past losses or problems → strong skip signal.
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
-- bins_below = round(config.strategy.minBinsBelow + (candidate volatility/5)*(config.strategy.maxBinsBelow-config.strategy.minBinsBelow)) clamped to [minBinsBelow,maxBinsBelow]. Volatility must be a positive number; 0/unknown means skip.
-- Use amount_y only, keep amount_x=0 and bins_above=0.
+- bins_above is always 0 and amount_x is always 0 (single-sided SOL deploy — this is enforced by the code).
+- RANGE PLACEMENT — this is critical. The active bin is your CEILING, not your midpoint.
+  To give the position room to breathe before going OOR, you must deploy enough bins below
+  so that the current price sits in the TOP THIRD of your range, not right at the edge.
+  Use this volatility table:
+
+  volatility < 2   → bins_below = 8   (price sits ~67% from floor, 33% buffer above floor)
+  volatility 2–3   → bins_below = 12  (moderate movement expected)
+  volatility 3–5   → bins_below = 18  (high movement — wide coverage needed)
+  volatility > 5   → SKIP. Too chaotic for single-sided deploy. Reject the candidate.
+
+  NEVER use bins_below < 8. A tight range means OOR within minutes.
+
+- RANGE CHECK: Before calling deploy_position, state the expected range coverage explicitly:
+  "Current price is at the ceiling. With bins_below=X and bin_step=Y, 
+  price can drop Z% before going OOR. This gives N minutes of coverage at current volatility."
+  If estimated coverage is under 15 minutes at current volatility — increase bins_below or skip.
+
 - Bin steps must be [80-125].
 - Pick ONE pool only when conviction is real. If only one weak candidate survives, skip and explain why none qualify.
 
