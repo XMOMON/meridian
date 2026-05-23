@@ -615,6 +615,8 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         eligible[i].dev_sold_all    = adv.dev_sold_all;
         eligible[i].dex_boost       = adv.dex_boost;
         eligible[i].dex_screener_paid = adv.dex_screener_paid;
+        eligible[i].is_honeypot     = adv.is_honeypot;
+        eligible[i].dev_rug_count   = adv.dev_rug_count;
         if (adv.creator && !eligible[i].dev) eligible[i].dev = adv.creator;
       }
       if (risk) {
@@ -637,6 +639,26 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       if (p.is_wash) {
         log("screening", `Risk filter: dropped ${p.name} — wash trading flagged`);
         pushFilteredReason(filteredOut, p, "wash trading flagged");
+        return false;
+      }
+      return true;
+    }));
+
+    // Honeypot hard filter — cannot sell = guaranteed loss
+    eligible.splice(0, eligible.length, ...eligible.filter((p) => {
+      if (p.is_honeypot) {
+        log("screening", `Risk filter: dropped ${p.name} — honeypot detected`);
+        pushFilteredReason(filteredOut, p, "honeypot detected");
+        return false;
+      }
+      return true;
+    }));
+
+    // Dev rug history hard filter — serial rugger = skip
+    eligible.splice(0, eligible.length, ...eligible.filter((p) => {
+      if (p.dev_rug_count != null && p.dev_rug_count >= 1) {
+        log("screening", `Risk filter: dropped ${p.name} — dev rugged ${p.dev_rug_count} token(s) before`);
+        pushFilteredReason(filteredOut, p, `dev rugged ${p.dev_rug_count} token(s) previously`);
         return false;
       }
       return true;

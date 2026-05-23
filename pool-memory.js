@@ -10,17 +10,69 @@ import { log } from "./logger.js";
 import { config } from "./config.js";
 
 const POOL_MEMORY_FILE = "./pool-memory.json";
-const MAX_NOTE_LENGTH = 280;
+const MAX_NOTE_LENGTH = 500;
 
+// Dangerous patterns to detect injection attempts
+const DANGEROUS_PATTERNS = [
+  /(<script|<iframe|<object|<embed|javascript:|onerror=|onload=)/i,  // XSS
+  /(union\s+select|drop\s+table|insert\s+into|delete\s+from|update\s+set)/i,  // SQL injection
+  /(\.\.\/|\.\.\\|%2e%2e|%252e)/i,  // Path traversal
+  /(\x00|\\x00|%00|\\0)/,  // Null bytes
+  /(eval\(|exec\(|system\(|passthru\()/i,  // Code execution
+];
+
+// Allowed characters: alphanumeric, spaces, basic punctuation
+const ALLOWED_CHARS = /^[a-zA-Z0-9\s.,;:!?()\-_'"@#$%&+=\[\]{}/*\n\r]+$/;
+
+/**
+ * Validate and sanitize user-provided notes for storage.
+ * @param {string} text - Input text to validate
+ * @param {number} maxLen - Maximum allowed length
+ * @returns {Object} { valid: boolean, sanitized: string|null, error: string|null }
+ */
 function sanitizeStoredNote(text, maxLen = MAX_NOTE_LENGTH) {
-  if (text == null) return null;
-  const cleaned = String(text)
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/[<>`]/g, "")
-    .trim()
-    .slice(0, maxLen);
-  return cleaned || null;
+  if (text == null || text === "") {
+    return { valid: true, sanitized: null, error: null };
+  }
+
+  const input = String(text);
+
+  // Strict length validation - reject if too long
+  if (input.length > maxLen) {
+    const error = `Note too long: ${input.length} chars (max: ${maxLen})`;
+    log("validation_error", error);
+    return { valid: false, sanitized: null, error };
+  }
+
+  // Check for dangerous patterns
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(input)) {
+      const error = `Dangerous pattern detected: ${pattern.source}`;
+      log("validation_error", `Blocked note: ${error}`);
+      return { valid: false, sanitized: null, error };
+    }
+  }
+
+  // Basic sanitization
+  let cleaned = input
+    .replace(/[\r\n\t]+/g, " ")  // Normalize whitespace
+    .replace(/\s+/g, " ")         // Collapse multiple spaces
+    .replace(/[<>`]/g, "")        // Remove dangerous chars
+    .trim();
+
+  // Check character whitelist
+  if (!ALLOWED_CHARS.test(cleaned)) {
+    const error = "Note contains disallowed characters";
+    log("validation_error", error);
+    return { valid: false, sanitized: null, error };
+  }
+
+  // Final check: ensure we have content after sanitization
+  if (!cleaned || cleaned.length === 0) {
+    return { valid: true, sanitized: null, error: null };
+  }
+
+  return { valid: true, sanitized: cleaned, error: null };
 }
 
 function load() {
@@ -191,13 +243,13 @@ export function recordPoolDeploy(poolAddress, deployData) {
     const rawScope = String(config.management.repeatDeployCooldownScope || "token").toLowerCase();
     const scope = ["pool", "token", "both"].includes(rawScope) ? rawScope : "token";
     const recentRepeatDeploys = entry.deploys.slice(-triggerCount);
-    const repeatedFeeGeneratingDeploys =
+    const repeatedLosingDeploys =
       cooldownHours > 0 &&
       recentRepeatDeploys.length >= triggerCount &&
-      recentRepeatDeploys.every((d) => d.pnl_pct != null && isFeeGeneratingDeploy(d));
+      recentRepeatDeploys.every((d) => d.pnl_pct != null && d.pnl_pct < 0);
 
-    if (repeatedFeeGeneratingDeploys) {
-      const reason = `repeat fee-generating deploys (${triggerCount}x)`;
+    if (repeatedLosingDeploys) {
+      const reason = `repeat losing deploys (${triggerCount}x)`;
       if (scope === "pool" || scope === "both" || !entry.base_mint) {
         const poolCooldownUntil = setPoolCooldown(entry, cooldownHours, reason);
         log("pool-memory", `Cooldown set for ${entry.name} until ${poolCooldownUntil} (${reason})`);
@@ -215,7 +267,7 @@ export function recordPoolDeploy(poolAddress, deployData) {
   // If last N deploys on this token are all losses, cool down the token
   // to prevent re-entering toxic positions (e.g. RoyalPop pattern).
   {
-    const LOSS_TRIGGER = 2;  // consecutive losses before cooldown
+    const LOSS_TRIGGER = 1;  // consecutive losses before cooldown
     const LOSS_COOLDOWN_HOURS = 24;
     const recentForLoss = entry.deploys.slice(-LOSS_TRIGGER);
     const consecutiveLosses =
@@ -384,8 +436,10 @@ export function recallForPool(poolAddress) {
   // Notes
   if (entry.notes?.length > 0) {
     const lastNote = entry.notes[entry.notes.length - 1];
-    const safeNote = sanitizeStoredNote(lastNote.note);
-    if (safeNote) lines.push(`NOTE: ${safeNote}`);
+    const validation = sanitizeStoredNote(lastNote.note);
+    if (validation.valid && validation.sanitized) {
+      lines.push(`NOTE: ${validation.sanitized}`);
+    }
   }
 
   return lines.length > 0 ? lines.join("\n") : null;
@@ -397,8 +451,15 @@ export function recallForPool(poolAddress) {
  */
 export function addPoolNote({ pool_address, note }) {
   if (!pool_address) return { error: "pool_address required" };
-  const safeNote = sanitizeStoredNote(note);
-  if (!safeNote) return { error: "note required" };
+
+  const validation = sanitizeStoredNote(note);
+  if (!validation.valid) {
+    log("pool-memory_error", `Pool note validation failed for ${pool_address}: ${validation.error}`);
+    return { error: validation.error };
+  }
+  if (!validation.sanitized) {
+    return { error: "note required" };
+  }
 
   const db = load();
 
@@ -417,11 +478,11 @@ export function addPoolNote({ pool_address, note }) {
   }
 
   db[pool_address].notes.push({
-    note: safeNote,
+    note: validation.sanitized,
     added_at: new Date().toISOString(),
   });
 
   save(db);
-  log("pool-memory", `Note added to ${pool_address.slice(0, 8)}: ${safeNote}`);
-  return { saved: true, pool_address, note: safeNote };
+  log("pool-memory", `Note added to ${pool_address.slice(0, 8)}: ${validation.sanitized}`);
+  return { saved: true, pool_address, note: validation.sanitized };
 }

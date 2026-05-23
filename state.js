@@ -14,17 +14,69 @@ import { log } from "./logger.js";
 const STATE_FILE = "./state.json";
 
 const MAX_RECENT_EVENTS = 20;
-const MAX_INSTRUCTION_LENGTH = 280;
+const MAX_INSTRUCTION_LENGTH = 1000;
 
+// Dangerous patterns to detect injection attempts
+const DANGEROUS_PATTERNS = [
+  /(<script|<iframe|<object|<embed|javascript:|onerror=|onload=)/i,  // XSS
+  /(union\s+select|drop\s+table|insert\s+into|delete\s+from|update\s+set)/i,  // SQL injection
+  /(\.\.\/|\.\.\\|%2e%2e|%252e)/i,  // Path traversal
+  /(\x00|\\x00|%00|\\0)/,  // Null bytes
+  /(eval\(|exec\(|system\(|passthru\()/i,  // Code execution
+];
+
+// Allowed characters: alphanumeric, spaces, basic punctuation
+const ALLOWED_CHARS = /^[a-zA-Z0-9\s.,;:!?()\-_'"@#$%&+=\[\]{}/*\n\r]+$/;
+
+/**
+ * Validate and sanitize user-provided text for storage.
+ * @param {string} text - Input text to validate
+ * @param {number} maxLen - Maximum allowed length
+ * @returns {Object} { valid: boolean, sanitized: string|null, error: string|null }
+ */
 function sanitizeStoredText(text, maxLen = MAX_INSTRUCTION_LENGTH) {
-  if (text == null) return null;
-  const cleaned = String(text)
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/[<>`]/g, "")
-    .trim()
-    .slice(0, maxLen);
-  return cleaned || null;
+  if (text == null || text === "") {
+    return { valid: true, sanitized: null, error: null };
+  }
+
+  const input = String(text);
+
+  // Strict length validation - reject if too long
+  if (input.length > maxLen) {
+    const error = `Input too long: ${input.length} chars (max: ${maxLen})`;
+    log("validation_error", error);
+    return { valid: false, sanitized: null, error };
+  }
+
+  // Check for dangerous patterns
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(input)) {
+      const error = `Dangerous pattern detected: ${pattern.source}`;
+      log("validation_error", `Blocked input: ${error}`);
+      return { valid: false, sanitized: null, error };
+    }
+  }
+
+  // Basic sanitization
+  let cleaned = input
+    .replace(/[\r\n\t]+/g, " ")  // Normalize whitespace
+    .replace(/\s+/g, " ")         // Collapse multiple spaces
+    .replace(/[<>`]/g, "")        // Remove dangerous chars
+    .trim();
+
+  // Check character whitelist
+  if (!ALLOWED_CHARS.test(cleaned)) {
+    const error = "Input contains disallowed characters";
+    log("validation_error", error);
+    return { valid: false, sanitized: null, error };
+  }
+
+  // Final check: ensure we have content after sanitization
+  if (!cleaned || cleaned.length === 0) {
+    return { valid: true, sanitized: null, error: null };
+  }
+
+  return { valid: true, sanitized: cleaned, error: null };
 }
 
 function load() {
@@ -196,11 +248,18 @@ export function recordClose(position_address, reason) {
 export function setPositionInstruction(position_address, instruction) {
   const state = load();
   const pos = state.positions[position_address];
-  if (!pos) return false;
-  pos.instruction = sanitizeStoredText(instruction);
+  if (!pos) return { success: false, error: "Position not found" };
+
+  const validation = sanitizeStoredText(instruction);
+  if (!validation.valid) {
+    log("state_error", `Position ${position_address} instruction validation failed: ${validation.error}`);
+    return { success: false, error: validation.error };
+  }
+
+  pos.instruction = validation.sanitized;
   save(state);
-  log("state", `Position ${position_address} instruction set: ${pos.instruction}`);
-  return true;
+  log("state", `Position ${position_address} instruction set: ${pos.instruction || "(cleared)"}`);
+  return { success: true, instruction: pos.instruction };
 }
 
 export function queuePeakConfirmation(position_address, candidatePnlPct, options = {}) {

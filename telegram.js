@@ -416,8 +416,8 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
     priceStr +
     coverageStr +
     poolStr +
-    `Position: <code>${position?.slice(0, 8)}...</code>\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    (position ? `Position: <code>${position.slice(0, 8)}...</code>\n` : "") +
+    (tx ? `Tx: <code>${tx.slice(0, 16)}...</code>` : "📄 Paper trade")
   );
 }
 

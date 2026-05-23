@@ -193,10 +193,13 @@ function suggestRiskParams(perfs, currentConfig) {
   const suggestions = {};
   const rationale = {};
 
+  // Skip params that are manually locked (prevent auto-tuner from overriding manual strategy changes)
+  const locked = new Set(currentConfig._lockedParams || []);
+
   // ── Stop loss optimization ──
   // Find the PnL at which losses become unrecoverable (fees never cover it)
   const losers = perfs.filter(p => p.pnl_pct < 0).sort((a, b) => a.pnl_pct - b.pnl_pct);
-  if (losers.length >= 3) {
+  if (!locked.has("stopLossPct") && losers.length >= 3) {
     // Find the threshold where losses that went deeper rarely recovered
     const deepLosses = losers.filter(p => p.pnl_pct <= currentConfig.stopLossPct);
     const shallowLosses = losers.filter(p => p.pnl_pct > currentConfig.stopLossPct);
@@ -217,12 +220,12 @@ function suggestRiskParams(perfs, currentConfig) {
 
   // ── Take profit optimization ──
   const winners = perfs.filter(p => p.pnl_pct > 0).sort((a, b) => b.pnl_pct - a.pnl_pct);
-  if (winners.length >= 3) {
+  if (!locked.has("takeProfitPct") && winners.length >= 3) {
     // Median winner PnL — suggests realistic TP target
     const medianWinPnl = winners[Math.floor(winners.length / 2)]?.pnl_pct;
     if (medianWinPnl != null) {
-      // Floor at 1.5% — must stay below trailingTriggerPct so trailing TP can activate
-      const tpFloor = Math.max(1.5, (currentConfig.trailingTriggerPct ?? 4) - 1.5);
+      // Floor at 1.8% — must stay below trailingTriggerPct so trailing TP can activate
+      const tpFloor = Math.max(1.8, (currentConfig.trailingTriggerPct ?? 4) - 1.5);
       const suggestedTP = Math.round(Math.max(tpFloor, Math.min(15, medianWinPnl * 0.8)) * 10) / 10;
       if (Math.abs(suggestedTP - currentConfig.takeProfitPct) > 0.5) {
         suggestions.takeProfitPct = suggestedTP;
@@ -233,7 +236,7 @@ function suggestRiskParams(perfs, currentConfig) {
 
   // ── Hold time optimization ──
   const holdPerfs = perfs.filter(p => p.minutes_held != null && p.minutes_held > 0);
-  if (holdPerfs.length >= 5) {
+  if (!locked.has("maxHoldMinutes") && holdPerfs.length >= 5) {
     const holdByBucket = analyzeByBucket(holdPerfs, holdTimeBucket, "minutes_held");
     const bestHold = findOptimalRange(holdByBucket, 3);
     const worstHold = findWorstRange(holdByBucket, 3);
@@ -251,8 +254,7 @@ function suggestRiskParams(perfs, currentConfig) {
   }
 
   // ── Trailing drop optimization ──
-  if (winners.length >= 5) {
-    // Look at how much winners gave back before the trailing TP kicked in
+  if (!locked.has("trailingDropPct") && winners.length >= 5) {
     const trailingCloses = perfs.filter(p =>
       /trailing/i.test(p.close_reason || "") && p.pnl_pct > 0
     );

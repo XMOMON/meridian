@@ -18,17 +18,69 @@ const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 const LESSONS_FILE = "./lessons.json";
 const MIN_EVOLVE_POSITIONS = 5;   // don't evolve until we have real data
 const MAX_CHANGE_PER_STEP  = 0.20; // never shift a threshold more than 20% at once
-const MAX_MANUAL_LESSON_LENGTH = 400;
+const MAX_MANUAL_LESSON_LENGTH = 2000;
 
+// Dangerous patterns to detect injection attempts
+const DANGEROUS_PATTERNS = [
+  /(<script|<iframe|<object|<embed|javascript:|onerror=|onload=)/i,  // XSS
+  /(union\s+select|drop\s+table|insert\s+into|delete\s+from|update\s+set)/i,  // SQL injection
+  /(\.\.\/|\.\.\\|%2e%2e|%252e)/i,  // Path traversal
+  /(\x00|\\x00|%00|\\0)/,  // Null bytes
+  /(eval\(|exec\(|system\(|passthru\()/i,  // Code execution
+];
+
+// Allowed characters: alphanumeric, spaces, basic punctuation
+const ALLOWED_CHARS = /^[a-zA-Z0-9\s.,;:!?()\-_'"@#$%&+=\[\]{}/*\n\r]+$/;
+
+/**
+ * Validate and sanitize user-provided lesson text for storage.
+ * @param {string} text - Input text to validate
+ * @param {number} maxLen - Maximum allowed length
+ * @returns {Object} { valid: boolean, sanitized: string|null, error: string|null }
+ */
 function sanitizeLessonText(text, maxLen = MAX_MANUAL_LESSON_LENGTH) {
-  if (text == null) return null;
-  const cleaned = String(text)
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/[<>`]/g, "")
-    .trim()
-    .slice(0, maxLen);
-  return cleaned || null;
+  if (text == null || text === "") {
+    return { valid: true, sanitized: null, error: null };
+  }
+
+  const input = String(text);
+
+  // Strict length validation - reject if too long
+  if (input.length > maxLen) {
+    const error = `Lesson too long: ${input.length} chars (max: ${maxLen})`;
+    log("validation_error", error);
+    return { valid: false, sanitized: null, error };
+  }
+
+  // Check for dangerous patterns
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(input)) {
+      const error = `Dangerous pattern detected: ${pattern.source}`;
+      log("validation_error", `Blocked lesson: ${error}`);
+      return { valid: false, sanitized: null, error };
+    }
+  }
+
+  // Basic sanitization
+  let cleaned = input
+    .replace(/[\r\n\t]+/g, " ")  // Normalize whitespace
+    .replace(/\s+/g, " ")         // Collapse multiple spaces
+    .replace(/[<>`]/g, "")        // Remove dangerous chars
+    .trim();
+
+  // Check character whitelist
+  if (!ALLOWED_CHARS.test(cleaned)) {
+    const error = "Lesson contains disallowed characters";
+    log("validation_error", error);
+    return { valid: false, sanitized: null, error };
+  }
+
+  // Final check: ensure we have content after sanitization
+  if (!cleaned || cleaned.length === 0) {
+    return { valid: true, sanitized: null, error: null };
+  }
+
+  return { valid: true, sanitized: cleaned, error: null };
 }
 
 function load() {
@@ -414,12 +466,12 @@ export function evolveThresholds(perfData, config) {
     }
   }
 
-  // ── 2. minFeeTvlRatio ─────────────────────────────────────────
+  // ── 2. minFeeActiveTvlRatio ─────────────────────────────────────────
   // Raise the floor if low-fee pools consistently underperform.
   {
     const winnerFees = winners.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
     const loserFees  = losers.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
-    const current    = config.screening.minFeeTvlRatio;
+    const current    = config.screening.minFeeActiveTvlRatio;
 
     if (winnerFees.length >= 2) {
       // Minimum fee/TVL among winners — we know pools below this don't work for us
@@ -429,8 +481,8 @@ export function evolveThresholds(perfData, config) {
         const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
         const rounded = Number(newVal.toFixed(2));
         if (rounded > current) {
-          changes.minFeeTvlRatio = rounded;
-          rationale.minFeeTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
+          changes.minFeeActiveTvlRatio = rounded;
+          rationale.minFeeActiveTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
         }
       }
     }
@@ -445,9 +497,9 @@ export function evolveThresholds(perfData, config) {
           const target  = maxLoserFee * 1.2;
           const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
           const rounded = Number(newVal.toFixed(2));
-          if (rounded > current && !changes.minFeeTvlRatio) {
-            changes.minFeeTvlRatio = rounded;
-            rationale.minFeeTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
+          if (rounded > current && !changes.minFeeActiveTvlRatio) {
+            changes.minFeeActiveTvlRatio = rounded;
+            rationale.minFeeActiveTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
           }
         }
       }
@@ -494,9 +546,9 @@ export function evolveThresholds(perfData, config) {
 
   // Apply to live config object immediately
   const s = config.screening;
-  if (changes.maxVolatility    != null) s.maxVolatility    = changes.maxVolatility;
-  if (changes.minFeeTvlRatio   != null) s.minFeeTvlRatio   = changes.minFeeTvlRatio;
-  if (changes.minOrganic       != null) s.minOrganic       = changes.minOrganic;
+  if (changes.maxVolatility          != null) s.maxVolatility          = changes.maxVolatility;
+  if (changes.minFeeActiveTvlRatio   != null) s.minFeeActiveTvlRatio   = changes.minFeeActiveTvlRatio;
+  if (changes.minOrganic             != null) s.minOrganic             = changes.minOrganic;
 
   // Log a lesson summarizing the evolution
   const data = load();

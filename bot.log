@@ -1,0 +1,52 @@
+[2026-05-23T22:12:51.367Z] [STARTUP] DLMM LP Agent starting...
+[2026-05-23T22:12:51.375Z] [STARTUP] Mode: DRY RUN
+[2026-05-23T22:12:51.375Z] [STARTUP] Model: meridian-bot
+[2026-05-23T22:12:51.439Z] [STARTUP] Non-TTY mode — starting cron cycles immediately.
+[2026-05-23T22:12:51.522Z] [CRON] Cycles started — management every 10m, screening every 30m
+[2026-05-23T22:12:51.528Z] [TELEGRAM] Bot polling started
+[2026-05-23T22:12:51.529Z] [CRON] Screening skipped — outside active hours (current: 22 UTC, allowed: 2,5,8,17,18,19,20,21)
+[2026-05-23T22:12:52.103Z] [HIVEMIND_WARN] Lesson pull failed: Invalid HiveMind API key
+[2026-05-23T22:12:52.108Z] [HIVEMIND_WARN] Agent register failed: Invalid HiveMind API key
+[2026-05-23T22:12:52.109Z] [HIVEMIND_WARN] Preset pull failed: Invalid HiveMind API key
+[2026-05-23T22:13:06.853Z] [TELEGRAM] Incoming: test
+[2026-05-23T22:13:07.597Z] [AGENT] Step 1/20
+[2026-05-23T22:13:07.622Z] [ERROR] Agent loop error at step 0: 401 Invalid API key
+[2026-05-23T22:20:00.008Z] [CRON] Starting management cycle
+[2026-05-23T22:20:00.017Z] [CRON] No open positions — triggering screening cycle
+[2026-05-23T22:20:00.017Z] [CRON] Screening skipped — outside active hours (current: 22 UTC, allowed: 2,5,8,17,18,19,20,21)
+[2026-05-23T22:27:51.977Z] [HIVEMIND_WARN] Agent register failed: Invalid HiveMind API key
+[2026-05-23T22:27:51.994Z] [HIVEMIND_WARN] Preset pull failed: Invalid HiveMind API key
+[2026-05-23T22:27:51.995Z] [HIVEMIND_WARN] Lesson pull failed: Invalid HiveMind API key
+[2026-05-23T22:30:00.417Z] [CRON] Starting management cycle
+[2026-05-23T22:30:00.425Z] [CRON] No open positions — triggering screening cycle
+[2026-05-23T22:30:00.426Z] [CRON] Screening skipped — outside active hours (current: 22 UTC, allowed: 2,5,8,17,18,19,20,21)
+[2026-05-23T22:30:00.426Z] [CRON] Screening skipped — outside active hours (current: 22 UTC, allowed: 2,5,8,17,18,19,20,21)
+[2026-05-23T22:36:25.823Z] [TELEGRAM] Incoming: test
+[2026-05-23T22:36:26.533Z] [AGENT] Step 1/20
+[2026-05-23T22:36:26.544Z] [ERROR] Agent loop error at step 0: 404 No active credentials for provider: kiro
+[2026-05-23T22:40:00.338Z] [CRON] Starting management cycle
+[2026-05-23T22:40:00.363Z] [CRON] No open positions — triggering screening cycle
+[2026-05-23T22:40:00.365Z] [CRON] Screening skipped — outside active hours (current: 22 UTC, allowed: 2,5,8,17,18,19,20,21)
+[2026-05-23T22:42:51.998Z] [HIVEMIND_WARN] Agent register failed: Invalid HiveMind API key
+[2026-05-23T22:42:52.001Z] [HIVEMIND_WARN] Preset pull failed: Invalid HiveMind API key
+[2026-05-23T22:42:52.003Z] [HIVEMIND_WARN] Lesson pull failed: Invalid HiveMind API key
+[2026-05-23T22:50:00.395Z] [CRON] Starting management cycle
+[2026-05-23T22:50:00.414Z] [CRON] No open positions — triggering screening cycle
+[2026-05-23T22:50:00.415Z] [CRON] Screening skipped — outside active hours (current: 22 UTC, allowed: 2,5,8,17,18,19,20,21)
+[2026-05-23T22:57:51.977Z] [HIVEMIND_WARN] Preset pull failed: Invalid HiveMind API key
+[2026-05-23T22:57:51.981Z] [HIVEMIND_WARN] Agent register failed: Invalid HiveMind API key
+[2026-05-23T22:57:51.994Z] [HIVEMIND_WARN] Lesson pull failed: Invalid HiveMind API key
+ — triggering screening cycle
+[2026-05-23T22:40:00.723Z] [CRON] Screening skipped — outside active hours (current: 22 UTC, allowed: 2,5,8,17,18,19,20,21)
+[2026-05-23T22:45:10.199Z] [HIVEMIND_WARN] Agent register failed: Invalid HiveMind API key
+[2026-05-23T22:45:10.203Z] [HIVEMIND_WARN] Lesson pull failed: Invalid HiveMind API key
+[2026-05-23T22:45:10.204Z] [HIVEMIND_WARN] Preset pull failed: Invalid HiveMind API key
+[2026-05-23T22:50:00.263Z] [CRON] Starting management cycle
+[2026-05-23T22:50:00.281Z] [CRON] No open positions — triggering screening cycle
+[2026-05-23T22:50:00.283Z] [CRON] Screening skipped — outside active hours (current: 22 UTC, allowed: 2,5,8,17,18,19,20,21)
+[2026-05-23T22:53:38.399Z] [TELEGRAM] Incoming: test
+[2026-05-23T22:53:39.146Z] [AGENT] Step 1/20
+[2026-05-23T22:53:39.175Z] [ERROR] Agent loop error at step 0: 401 Invalid API key
+[2026-05-23T22:56:51.709Z] [TELEGRAM] Incoming: test
+[2026-05-23T22:56:52.428Z] [AGENT] Step 1/20
+[2026-05-23T22:56:52.447Z] [ERROR] Agent loop error at step 0: 401 Invalid API key

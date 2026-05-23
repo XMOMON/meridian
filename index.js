@@ -36,6 +36,7 @@ import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnable
 import { appendDecision } from "./decision-log.js";
 import { updatePaperPositions, checkPaperExits, closePaperPosition, getPaperPositionsAsLive, getPaperPositionCount, getPaperPerformanceSummary } from "./paper-tracker.js";
 import { takeDailySnapshot, formatDailyPnlMessage, formatDailyLessons, hasSnapshotToday, getLastSnapshotDate, getDailyPnlHistory, getCumulativeStats } from "./daily-pnl.js";
+import { generateStatsReport } from "./stats.js";
 
 const entrypointPath = process.env.pm_exec_path || process.argv[1];
 const isMain = entrypointPath
@@ -99,7 +100,22 @@ const TRAILING_DROP_CONFIRM_TOLERANCE_PCT = 1.0;
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
 function stripThink(text) {
   if (!text) return text;
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  // Only keep lines that look like results: emoji lines, key:value, JSON, or short status lines
+  const lines = cleaned.split("\n");
+  const kept = lines.filter(line => {
+    const t = line.trim();
+    if (!t) return false;
+    // Keep: emoji lines, DEPLOYED/NO DEPLOY, key-value pairs, JSON, short lines
+    if (/^[🚀📊📕⚠️❌✅🔍💰◎]/.test(t)) return true;
+    if (/^(DEPLOYED|NO DEPLOY|SKIP|REJECTED|Pool|Range|Fee|Volume|TVL|Volatility|Organic|Mcap|Age|Strategy|Reason)/i.test(t)) return true;
+    if (/^[{"\-\d]/.test(t)) return true;
+    if (t.length < 60) return true;
+    return false;
+  });
+  const result = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (result.length > 500) return result.slice(0, 500) + "…";
+  return result || "Cycle completed (no actionable output).";
 }
 
 function sanitizeUntrustedPromptText(text, maxLen = 500) {
@@ -413,6 +429,18 @@ After executing, write a brief one-line result per position.
       await liveMessage?.note("No tool actions needed.");
     }
 
+    // Adaptive fast management: recheck in 2min if any position has volatility > 2
+    const hasHighVol = positionData.some(p => (p.entry_volatility ?? p.volatility ?? 0) > 2);
+    if (hasHighVol && config.schedule.managementIntervalMin > 2) {
+      const fastDelayMs = 2 * 60 * 1000;
+      setTimeout(() => {
+        if (!_managementBusy) {
+          log("cron", "Fast management recheck (high volatility position)");
+          runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Fast recheck failed: ${e.message}`));
+        }
+      }, fastDelayMs);
+    }
+
     // Trigger screening after management
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
@@ -426,7 +454,7 @@ After executing, write a brief one-line result per position.
   } finally {
     _managementBusy = false;
     if (!silent && telegramEnabled()) {
-      if (mgmtReport) {
+      if (mgmtReport && !/no (tool )?action|no actionable|nothing to|all positions healthy/i.test(mgmtReport)) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
         else sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
@@ -446,18 +474,20 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return null;
   }
 
+  // Acquire lock IMMEDIATELY to prevent TOCTOU race
+  _screeningBusy = true;
+  _screeningLastTriggered = Date.now();
+
   // Time-of-day filter — only screen during profitable hours
   const activeHours = config.schedule.screeningActiveHoursUtc;
   if (Array.isArray(activeHours) && activeHours.length > 0) {
     const currentHourUtc = new Date().getUTCHours();
     if (!activeHours.includes(currentHourUtc)) {
       log("cron", `Screening skipped — outside active hours (current: ${currentHourUtc} UTC, allowed: ${activeHours.join(",")})`);
+      _screeningBusy = false; // Release lock before early return
       return null;
     }
   }
-
-  _screeningBusy = true; // set immediately — prevents TOCTOU race with concurrent callers
-  _screeningLastTriggered = Date.now();
 
   // Hard guards — don't even run the agent if preconditions aren't met
   let prePositions, preBalance;
@@ -497,9 +527,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     _screeningBusy = false;
     return screenReport;
   }
-  if (!silent && telegramEnabled()) {
-    liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
-  }
+  // Don't send initial "Scanning..." message — only notify on actual deploy/result
   timers.screeningLastRun = Date.now();
   log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
   try {
@@ -576,6 +604,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         reason: combinedExamples || "All candidates filtered before deploy",
         rejected: combined.slice(0, 5).map((entry) => `${entry.name}: ${entry.reason}`),
       });
+      _screeningBusy = false; // Release lock before early return
       return screenReport;
     }
 
@@ -605,6 +634,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           pool: passing[0].pool?.pool,
           pool_name: candidateName,
         });
+        _screeningBusy = false; // Release lock before early return
         return screenReport;
       }
     }
@@ -800,9 +830,8 @@ IMPORTANT:
   } finally {
     _screeningBusy = false;
     if (!silent && telegramEnabled()) {
-      if (screenReport) {
-        if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-        else sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
+      if (screenReport && !screenReport.startsWith("No candidates available")) {
+        sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
       }
     }
   }
@@ -1363,12 +1392,14 @@ function formatHelpText() {
     "/closeall — close all open positions",
     "/set <n> <note> — set note/instruction on position",
     "/config — show important runtime config",
+    "/model — show current LLM model + fallbacks",
     "/settings — button menu for common config",
     "/setcfg <key> <value> — update persisted config",
     "/screen — refresh deterministic candidate list",
     "/candidates — show latest cached candidates",
     "/deploy <n> — deploy candidate by cached index",
     "/briefing — morning briefing",
+    "/stats — 7-day stats + screening + bans",
     "/pnl — daily PnL snapshot",
     "/pnl week — 7-day PnL summary",
     "/lesson — daily lessons learned",
@@ -1504,6 +1535,18 @@ async function telegramHandler(msg) {
     return;
   }
 
+  if (text === "/stats") {
+    log("telegram", "Handling /stats command");
+    try {
+      const report = generateStatsReport();
+      await sendMessage(report);
+    } catch (e) {
+      log("telegram_error", `/stats failed: ${e.message}`);
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
   if (text === "/pnl" || text === "/dailypnl") {
     try {
       const snapshot = takeDailySnapshot();
@@ -1585,6 +1628,12 @@ async function telegramHandler(msg) {
 
   if (text === "/config") {
     await sendMessage(formatConfigSnapshot()).catch(() => {});
+    return;
+  }
+
+  if (text === "/model") {
+    const fallbacks = (config.llm.fallbackModels || []).map((m, i) => `  ${i + 1}. ${m}`).join("\n");
+    await sendMessage(`🤖 Model: ${config.llm.screeningModel}\n\nFallbacks:\n${fallbacks}`).catch(() => {});
     return;
   }
 

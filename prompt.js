@@ -133,6 +133,8 @@ NARRATIVE QUALITY (your main judgment call):
 
 POOL MEMORY: Past losses or problems → strong skip signal.
 
+MOMENTUM FILTER: Prioritize pools with price movement in the last 15 minutes. A pool with good fee/TVL but flat price action is a LOW YIELD trap — the fees look good historically but volume has dried up. Look for pools where the active bin has changed in the last 10-15 minutes as evidence of live trading.
+
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
 - bins_above is always 0 and amount_x is always 0 (single-sided SOL deploy — this is enforced by the code).

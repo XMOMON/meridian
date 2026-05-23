@@ -272,15 +272,38 @@ const toolMap = {
       }
       // Delay restart so this tool response (and Telegram message) gets sent first
       setTimeout(() => {
-        if (!process.env.pm_id) {
-          const child = spawn(process.execPath, process.argv.slice(1), {
-            detached: true,
-            stdio: "inherit",
-            cwd: process.cwd(),
-          });
-          child.unref();
+        try {
+          if (!process.env.pm_id) {
+            const child = spawn(process.execPath, process.argv.slice(1), {
+              detached: true,
+              stdio: "inherit",
+              cwd: process.cwd(),
+            });
+
+            // Add error handler to prevent unhandled rejections
+            child.on("error", (err) => {
+              log("error", `self_update spawn failed: ${err.message}`);
+              // Still exit even if spawn fails
+              setTimeout(() => process.exit(1), 500);
+            });
+
+            // Add exit handler to check exit code
+            child.on("exit", (code) => {
+              if (code !== null && code !== 0) {
+                log("error", `self_update child process exited with code ${code}`);
+              }
+            });
+
+            child.unref();
+          }
+
+          // Add timeout fallback for process.exit
+          setTimeout(() => process.exit(0), 1000);
+        } catch (err) {
+          log("error", `self_update restart failed: ${err.message}`);
+          // Ensure process exits even if spawn throws
+          setTimeout(() => process.exit(1), 500);
         }
-        process.exit(0);
       }, 3000);
       const restartMode = process.env.pm_id
         ? "PM2 detected — exiting in 3s so PM2 can restart the managed process."
@@ -517,7 +540,12 @@ const toolMap = {
       }
     }
     userConfig._lastAgentTune = new Date().toISOString();
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+    try {
+      fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+    } catch (error) {
+      log("error", `Failed to persist config changes to user-config.json: ${error.message}`);
+      return { success: false, error: `Config updated in memory but failed to persist: ${error.message}`, applied, reason };
+    }
 
     // Restart cron jobs if intervals changed
     const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null;
@@ -571,12 +599,22 @@ export async function executeTool(name, args) {
 
   // ─── Pre-execution safety checks ──────────
   if (PROTECTED_TOOLS.has(name)) {
-    const safetyCheck = await runSafetyChecks(name, args);
-    if (!safetyCheck.pass) {
-      log("safety_block", `${name} blocked: ${safetyCheck.reason}`);
+    try {
+      const safetyCheck = await runSafetyChecks(name, args);
+      if (!safetyCheck.pass) {
+        log("safety_block", `${name} blocked: ${safetyCheck.reason}`);
+        return {
+          blocked: true,
+          reason: safetyCheck.reason,
+        };
+      }
+    } catch (error) {
+      const errorMsg = `Safety check failed for ${name}: ${error.message}`;
+      log("error", `${errorMsg} | timestamp: ${new Date().toISOString()}`);
       return {
-        blocked: true,
-        reason: safetyCheck.reason,
+        error: errorMsg,
+        tool: name,
+        timestamp: new Date().toISOString(),
       };
     }
   }
@@ -632,15 +670,23 @@ export async function executeTool(name, args) {
 
     if (success) {
       if (name === "swap_token" && result.tx) {
-        notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
+        notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch((err) => {
+          log("notification_error", `Failed to send swap notification: ${err.message}`);
+        });
       } else if (name === "deploy_position") {
-        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
+        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch((err) => {
+          log("notification_error", `Failed to send deploy notification: ${err.message}`);
+        });
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch((err) => {
+          log("notification_error", `Failed to send close notification: ${err.message}`);
+        });
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
-          if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.(() => {});
+          if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.((err) => {
+            log("pool_memory_error", `Failed to add pool note: ${err.message}`);
+          });
         }
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {
@@ -676,6 +722,10 @@ export async function executeTool(name, args) {
     return result;
   } catch (error) {
     const duration = Date.now() - startTime;
+    const timestamp = new Date().toISOString();
+
+    // Log with full context for debugging
+    log("error", `Tool execution failed: ${name} | error: ${error.message} | args: ${JSON.stringify(args).slice(0, 200)} | timestamp: ${timestamp}`);
 
     logAction({
       tool: name,
@@ -683,12 +733,18 @@ export async function executeTool(name, args) {
       error: error.message,
       duration_ms: duration,
       success: false,
+      timestamp,
     });
 
     // Return error to LLM so it can decide what to do
     return {
       error: error.message,
       tool: name,
+      timestamp,
+      details: {
+        duration_ms: duration,
+        args_summary: JSON.stringify(args).slice(0, 100),
+      },
     };
   }
 }
@@ -772,9 +828,23 @@ async function runSafetyChecks(name, args) {
       }
 
       // Check position count limit + duplicate pool guard — force fresh scan to avoid stale cache
-      const positions = await getMyPositions({ force: true });
-      // In dry-run mode, also count paper positions toward the limit
-      const { getPaperPositionCount: paperCount, findPaperPositionByPool: paperByPool } = await import("../paper-tracker.js");
+      let positions;
+      let paperCount;
+      let paperByPool;
+      try {
+        positions = await getMyPositions({ force: true });
+        // In dry-run mode, also count paper positions toward the limit
+        const paperTracker = await import("../paper-tracker.js");
+        paperCount = paperTracker.getPaperPositionCount;
+        paperByPool = paperTracker.findPaperPositionByPool;
+      } catch (error) {
+        log("error", `Failed to check positions during safety check: ${error.message}`);
+        return {
+          pass: false,
+          reason: `Could not verify position count before deploy: ${error.message}`,
+        };
+      }
+
       const totalPositions = positions.total_positions + (process.env.DRY_RUN === "true" ? paperCount() : 0);
       if (totalPositions >= config.risk.maxPositions) {
         return {
@@ -830,7 +900,16 @@ async function runSafetyChecks(name, args) {
 
       // Check SOL balance
       if (process.env.DRY_RUN !== "true") {
-        const balance = await getWalletBalances();
+        let balance;
+        try {
+          balance = await getWalletBalances();
+        } catch (error) {
+          log("error", `Failed to check wallet balance during safety check: ${error.message}`);
+          return {
+            pass: false,
+            reason: `Could not verify wallet balance before deploy: ${error.message}`,
+          };
+        }
         const gasReserve = config.management.gasReserve;
         const minRequired = amountY + gasReserve;
         if (balance.sol < minRequired) {

@@ -230,7 +230,8 @@ function computeBooleanLift(signal, wins, losses, minSamples) {
   let trueWins = 0, trueTotal = 0, falseWins = 0, falseTotal = 0;
 
   for (const { w, snap } of allEntries) {
-    const val = snap.signal_snapshot?.[signal];
+    // Read signal directly from entry (performance records store signals at top level)
+    const val = snap[signal];
     if (val === undefined || val === null) continue;
     if (val) { trueTotal++; if (w) trueWins++; }
     else      { falseTotal++; if (w) falseWins++; }
@@ -246,7 +247,8 @@ function computeCategoricalLift(signal, wins, losses, minSamples) {
   const buckets = {};
 
   for (const { w, snap } of allEntries) {
-    const val = snap.signal_snapshot?.[signal];
+    // Read signal directly from entry (performance records store signals at top level)
+    const val = snap[signal];
     if (val === undefined || val === null) continue;
     if (!buckets[val]) buckets[val] = { wins: 0, total: 0 };
     buckets[val].total++;
@@ -266,9 +268,8 @@ function computeCategoricalLift(signal, wins, losses, minSamples) {
 function extractNumeric(signal, entries) {
   const vals = [];
   for (const entry of entries) {
-    const snap = entry.signal_snapshot;
-    if (!snap) continue;
-    const v = snap[signal];
+    // Read signal directly from entry (performance records store signals at top level)
+    const v = entry[signal];
     if (v != null && typeof v === "number" && isFinite(v)) vals.push(v);
   }
   return vals;
