@@ -20,6 +20,14 @@
 
 **Meridian** is an autonomous AI-powered agent that manages liquidity positions on **Meteora DLMM pools** across Solana. It screens opportunities, deploys capital, monitors positions in real-time, and learns from every trade to continuously improve its strategy.
 
+### 🆕 Enhanced Fork Features
+
+This fork includes several improvements over the original:
+- **Enhanced Configuration System** — Comprehensive `.env.example` with security warnings and setup guidance
+- **Debug Logging** — Full SCREENER prompt logging for LLM verification and tuning
+- **OpenRouter Direct Integration** — Streamlined LLM provider setup with free model fallbacks
+- **Range-Aware Deploy Rules** — Fixed bin tier system for better position management
+
 [Getting Started](#-quick-start) · [Features](#-features) · [Architecture](#-architecture) · [Config](#-config-reference)
 
 </div>
