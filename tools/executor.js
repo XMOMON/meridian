@@ -151,6 +151,21 @@ async function validateDeployPoolThresholds(args) {
     };
   }
 
+  const maxVolatility = numberOrNull(config.screening.maxVolatility);
+  if (maxVolatility != null && maxVolatility > 0 && volatility > maxVolatility) {
+    return {
+      pass: false,
+      reason: `Pool ${volatilityTimeframe} volatility ${volatility.toFixed(2)} exceeds configured maxVolatility ${maxVolatility}.`,
+    };
+  }
+  const minVolatility = numberOrNull(config.screening.minVolatility);
+  if (minVolatility != null && minVolatility > 0 && volatility < minVolatility) {
+    return {
+      pass: false,
+      reason: `Pool ${volatilityTimeframe} volatility ${volatility.toFixed(2)} is below configured minVolatility ${minVolatility}.`,
+    };
+  }
+
   const actualBinStep = poolDetailBinStep(detail);
   const minStep = numberOrNull(config.screening.minBinStep);
   const maxStep = numberOrNull(config.screening.maxBinStep);
